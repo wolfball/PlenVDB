@@ -4,23 +4,22 @@
 
 ## File tree
 
-.PlenVDB-main  
+.PlenVDB  
 ├── openvdb  
 ├── plenvdb  
 ├── README.md  
-├── requirements.txt
 
 ## Requirements
 
 - Ubuntu, python==3.7, g++>=6.3.1, gcc>=6.3.1, CMake>=3.18.0, Boost>=1.70, TBB>=2019.0, Blosc>=1.7.0
 - pytorch and torch-scatter is dependent on CUDA, please install the correct version for your machine
 
-First, let's compile OpenVDB, NanoVDB and the python module. We mainly focus on **PlenVDB-main/openvdb** directory, which is an old version of [OpenVDB library](https://github.com/AcademySoftwareFoundation/openvdb). We have tested on g++7.5.0, gcc7.5.0, make3.18.0,libboost1.74 tbb2019 and libblosc1.7.0. And you can go to **PlenVDB-main/openvdb/cmake/config/OpenVDBVersions.cmake** for detailed version requirements about the dependencies. If you have some trouble with the dependencies, we hope the commands in the **[Additional Commands](#Additional-Commands)** will help.
+First, let's compile OpenVDB, NanoVDB and the python module. We mainly focus on **PlenVDB/openvdb** directory, which is an old version of [OpenVDB library](https://github.com/AcademySoftwareFoundation/openvdb). We have tested on g++7.5.0, gcc7.5.0, make3.18.0,libboost1.74 tbb2019 and libblosc1.7.0. And you can go to **PlenVDB/openvdb/cmake/config/OpenVDBVersions.cmake** for detailed version requirements about the dependencies. If you have some trouble with the dependencies, we hope the commands in the **[Additional Commands](#Additional-Commands)** will help.
 
 When all dependencies are ready, run
 
 ```bash
-cd PlenVDB-main/openvdb
+cd PlenVDB/openvdb
 mkdir build
 cd build
 cmake -DOPENVDB_BUILD_NANOVDB=ON -DOPENVDB_BUILD_PYTHON_MODULE=ON -DUSE_NUMPY=ON ..
@@ -33,7 +32,7 @@ sudo make install
 Second, let's create an environment for running. Here we give the CUDA10.2 version.
 
 ```bash
-# cd PlenVDB-main/plenvdb/
+# cd PlenVDB/plenvdb/
 conda create -n plenvdb python=3.7
 conda activate plenvdb
 pip install -r requirements.txt
@@ -46,7 +45,7 @@ pip install imageio-ffmpeg
 Third, let's compile the plenvdb.so, which is a VDB-based data structure.
 
 ```bash
-cd PlenVDB-main/plenvdb/lib/vdb/
+cd PlenVDB/plenvdb/lib/vdb/
 mkdir build
 cd build
 cmake ..
@@ -57,7 +56,7 @@ If you meet with some difficulties in compilation, I recommende you to read its 
 
 ## Datasets
 
-Download [NeRF-Synthetic](https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1), [NSVF](https://dl.fbaipublicfiles.com/nsvf/dataset/Synthetic_NSVF.zip), [BlendedMVS](https://dl.fbaipublicfiles.com/nsvf/dataset/BlendedMVS.zip), [DeepVoxels](https://drive.google.com/open?id=1ScsRlnzy9Bd_n-xw83SP-0t548v63mPH) and put them under PlenVDB-main/plenvdb/data/.
+Download [NeRF-Synthetic](https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1), [NSVF](https://dl.fbaipublicfiles.com/nsvf/dataset/Synthetic_NSVF.zip), [BlendedMVS](https://dl.fbaipublicfiles.com/nsvf/dataset/BlendedMVS.zip), [DeepVoxels](https://drive.google.com/open?id=1ScsRlnzy9Bd_n-xw83SP-0t548v63mPH) and put them under PlenVDB/plenvdb/data/.
 
 Take NeRF-Synthetic for example:
 
@@ -77,7 +76,7 @@ Take NeRF-Synthetic for example:
 Run for mic
 
 ```bash
-# cd PlenVDB-main/plenvdb/
+# cd PlenVDB/plenvdb/
 python run.py --config configs/nerf/mic.py # --render_test
 python vdb_compression.py --basedir logs/nerf_synthetic/ --scenes mic
 python run.py --config configs/nerf/mic.py --render_test --render_only --cps
