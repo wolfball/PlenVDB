@@ -60,16 +60,16 @@ Download [NeRF-Synthetic](https://drive.google.com/drive/folders/128yBriW1IG_3NJ
 
 Take NeRF-Synthetic for example:
 
-.data
-├── download_data.sh
-└── nerf_synthetic
-    └── mic
-        ├── test
-        ├── train
-        ├── transforms_test.json
-        ├── transforms_train.json
-        ├── transforms_val.json
-        └── val
+.data  
+├── download_data.sh  
+└── nerf_synthetic  
+    └── mic  
+        ├── test  
+        ├── train  
+        ├── transforms_test.json  
+        ├── transforms_train.json  
+        ├── transforms_val.json  
+        └── val  
 
 ## Training
 
