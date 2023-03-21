@@ -3,11 +3,12 @@
 
 
 ## File tree
-
+```txt
 .PlenVDB  
 ├── openvdb  
 ├── plenvdb  
 ├── README.md  
+```
 
 ## Requirements
 
@@ -59,7 +60,7 @@ If you meet with some difficulties in compilation, I recommende you to read its 
 Download [NeRF-Synthetic](https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1), [NSVF](https://dl.fbaipublicfiles.com/nsvf/dataset/Synthetic_NSVF.zip), [BlendedMVS](https://dl.fbaipublicfiles.com/nsvf/dataset/BlendedMVS.zip), [DeepVoxels](https://drive.google.com/open?id=1ScsRlnzy9Bd_n-xw83SP-0t548v63mPH) and put them under PlenVDB/plenvdb/data/.
 
 Take NeRF-Synthetic for example:
-
+```txt
 .data  
 ├── download_data.sh  
 └── nerf_synthetic  
@@ -70,7 +71,7 @@ Take NeRF-Synthetic for example:
         ├── transforms_train.json  
         ├── transforms_val.json  
         └── val  
-
+```
 ## Training
 
 Run for mic
