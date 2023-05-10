@@ -1,6 +1,12 @@
-# PlenVDB: A Memory Efficient VDB-Based Radiance Fields for Fast Training and Rendering
+# PlenVDB: A Memory Efficient VDB-Based Radiance Fields for Fast Training and Rendering (CVPR2023)
 
-![teaser](figs/teaser.png)
+<p align='center'>
+   <img src='figs/teaser.png' alt='teaser'> 
+</p>
+
+**PlenVDB: A Memory Efficient VDB-Based Radiance Fields for Fast Training and Rendering**
+
+*Han Yan, Celong Liu, Chao Ma, Xing Mei*
 
 ## File tree
 ```txt
@@ -159,3 +165,13 @@ make
 ```
 apt-get install -y libblosc-dev
 ```
+
+## Citation
+'''
+@inproceedings{hyan2023plenvdb,
+      title={PlenVDB: Memory Efficient VDB-Based Radiance Fields for Fast Training and Rendering },
+      author={Han Yan and Celong Liu and Chao Ma and Xing Mei},
+      year={2023},
+      booktitle={CVPR},
+}
+'''
