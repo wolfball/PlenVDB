@@ -1,6 +1,6 @@
 # PlenVDB: A Memory Efficient VDB-Based Radiance Fields for Fast Training and Rendering
 
-
+![teaser](figs/teaser.png)
 
 ## File tree
 ```txt
