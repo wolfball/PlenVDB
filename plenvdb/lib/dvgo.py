@@ -27,13 +27,14 @@ class DirectVoxGO(torch.nn.Module):
                  alpha_init=None,
                  mask_cache_path=None, mask_cache_thres=1e-3, mask_cache_world_size=None,
                  fast_color_thres=0,
-                 density_type='DenseGrid', k0_type='DenseGrid',
+                 density_type='VDBGrid', k0_type='VDBGrid',
                  density_config={}, k0_config={},
                  rgbnet_dim=0, rgbnet_direct=False, rgbnet_full_implicit=False,
                  rgbnet_depth=3, rgbnet_width=128,
                  viewbase_pe=4,
                  **kwargs):
         super(DirectVoxGO, self).__init__()
+        assert density_type == k0_type # two grids should be the same type
         self.register_buffer('xyz_min', torch.Tensor(xyz_min))
         self.register_buffer('xyz_max', torch.Tensor(xyz_max))
         self.fast_color_thres = fast_color_thres
@@ -172,7 +173,6 @@ class DirectVoxGO(torch.nn.Module):
             for co in cam_o.split(100)  # for memory saving
         ]).amin(0)
         self.density.setValuesOn_bymask(nearest_dist[None,None] <= near_clip, -100)
-        # self.density.grid[nearest_dist[None,None] <= near_clip] = -100
 
     @torch.no_grad()
     def scale_volume_grid(self, num_voxels):

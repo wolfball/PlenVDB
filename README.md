@@ -42,8 +42,8 @@ Second, let's create an environment for running. Here we give the CUDA10.2 versi
 # cd PlenVDB/plenvdb/
 conda create -n plenvdb python=3.7
 conda activate plenvdb
-pip install -r requirements.txt
 conda install pytorch==1.10.1 torchvision==0.11.2 torchaudio==0.10.1 cudatoolkit=10.2 -c pytorch
+pip install -r requirements.txt
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple/  pytest
 pip install torch-scatter -f https://data.pyg.org/whl/torch-1.10.1+cu102.html
 pip install imageio-ffmpeg
@@ -57,6 +57,7 @@ mkdir build
 cd build
 cmake ..
 # cmake  -DCMAKE_C_COMPILER=/usr/bin/gcc-7 -DCMAKE_CXX_COMPILER=/usr/bin/g++-7 ..
+make -j4
 ```
 
 If you meet with some difficulties in compilation, I recommende you to read its [repository](https://github.com/AcademySoftwareFoundation/openvdb) or [document](https://www.openvdb.org/documentation/doxygen/build.html). Plus, hope the commands that I've used in the following will help.

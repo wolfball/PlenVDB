@@ -73,10 +73,10 @@ void adam_upd_cuda(
 
   AT_DISPATCH_FLOATING_TYPES(param.type(), "adam_upd_cuda", ([&] {
     adam_upd_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        param.data<scalar_t>(),
-        grad.data<scalar_t>(),
-        exp_avg.data<scalar_t>(),
-        exp_avg_sq.data<scalar_t>(),
+        param.data_ptr<scalar_t>(),
+        grad.data_ptr<scalar_t>(),
+        exp_avg.data_ptr<scalar_t>(),
+        exp_avg_sq.data_ptr<scalar_t>(),
         N, step_size, beta1, beta2, eps);
   }));
 }
@@ -97,10 +97,10 @@ void masked_adam_upd_cuda(
 
   AT_DISPATCH_FLOATING_TYPES(param.type(), "masked_adam_upd_cuda", ([&] {
     masked_adam_upd_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        param.data<scalar_t>(),
-        grad.data<scalar_t>(),
-        exp_avg.data<scalar_t>(),
-        exp_avg_sq.data<scalar_t>(),
+        param.data_ptr<scalar_t>(),
+        grad.data_ptr<scalar_t>(),
+        exp_avg.data_ptr<scalar_t>(),
+        exp_avg_sq.data_ptr<scalar_t>(),
         N, step_size, beta1, beta2, eps);
   }));
 }
@@ -122,11 +122,11 @@ void adam_upd_with_perlr_cuda(
 
   AT_DISPATCH_FLOATING_TYPES(param.type(), "adam_upd_with_perlr_cuda", ([&] {
     adam_upd_with_perlr_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        param.data<scalar_t>(),
-        grad.data<scalar_t>(),
-        exp_avg.data<scalar_t>(),
-        exp_avg_sq.data<scalar_t>(),
-        perlr.data<scalar_t>(),
+        param.data_ptr<scalar_t>(),
+        grad.data_ptr<scalar_t>(),
+        exp_avg.data_ptr<scalar_t>(),
+        exp_avg_sq.data_ptr<scalar_t>(),
+        perlr.data_ptr<scalar_t>(),
         N, step_size, beta1, beta2, eps);
   }));
 }

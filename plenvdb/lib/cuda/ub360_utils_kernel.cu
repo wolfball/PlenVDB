@@ -39,9 +39,9 @@ torch::Tensor cumdist_thres_cuda(torch::Tensor dist, float thres) {
   auto mask = torch::zeros({n_rays, n_pts}, torch::dtype(torch::kBool).device(torch::kCUDA));
   AT_DISPATCH_FLOATING_TYPES(dist.type(), "cumdist_thres_cuda", ([&] {
     cumdist_thres_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        dist.data<scalar_t>(), thres,
+        dist.data_ptr<scalar_t>(), thres,
         n_rays, n_pts,
-        mask.data<bool>());
+        mask.data_ptr<bool>());
   }));
   return mask;
 }

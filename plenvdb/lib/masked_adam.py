@@ -44,8 +44,7 @@ class VDBAdam:
         self.has_per_lr = True
         per_lr = (count.float() / count.max()).reshape(-1).detach().cpu().numpy()
         self.densityOpt.set_pervoxel_lr(per_lr)
-        # self.colorOpt.set_pervoxel_lr(per_lr)
-    
+
     def update_lr(self, factor):
         self.densityOpt.update_lr(factor)
         self.colorOpt.update_lr(factor)

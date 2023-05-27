@@ -88,6 +88,8 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     ssims = []
     lpips_alex = []
     lpips_vgg = []
+
+    # load parameters
     if grid_type == "VDBGrid":
         w0 = model.rgbnet[0].weight.t().contiguous().detach().cpu().numpy()
         b0 = model.rgbnet[0].bias.detach().cpu().numpy()
@@ -296,7 +298,16 @@ def compute_bbox_by_coarse_geo(model_class, model_path, thres):
     print('compute_bbox_by_coarse_geo: finish (eps time:', eps_time, 'secs)')
     return xyz_min, xyz_max
 
-def create_new_model(cfg, cfg_model, cfg_train, xyz_min, xyz_max, stage, coarse_ckpt_path):
+
+def create_new_model(
+        cfg,
+        cfg_model,
+        cfg_train,
+        xyz_min,
+        xyz_max,
+        stage,
+        coarse_ckpt_path
+    ):
     model_kwargs = copy.deepcopy(cfg_model)
     num_voxels = model_kwargs.pop('num_voxels')
     if len(cfg_train.pg_scale):
@@ -321,9 +332,10 @@ def create_new_model(cfg, cfg_model, cfg_train, xyz_min, xyz_max, stage, coarse_
             num_voxels=num_voxels,
             mask_cache_path=coarse_ckpt_path,
             **model_kwargs)
-    model = model.to(device)
+    model = model.cuda()
     optimizer, vdbopt = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
     return model, optimizer, vdbopt
+
 
 def load_existed_model(args, cfg, cfg_train, reload_ckpt_path):
     if cfg.data.ndc:
@@ -332,7 +344,7 @@ def load_existed_model(args, cfg, cfg_train, reload_ckpt_path):
         model_class = dcvgo.DirectContractedVoxGO
     else:
         model_class = dvgo.DirectVoxGO
-    model = utils.load_model(model_class, reload_ckpt_path).to(device)
+    model = utils.load_model(model_class, reload_ckpt_path).cuda()
     optimizer, vdbopt = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
     model, optimizer, vdbopt, start = utils.load_checkpoint(
             model, optimizer, vdbopt, reload_ckpt_path, args.no_reload_optimizer)
@@ -341,7 +353,6 @@ def load_existed_model(args, cfg, cfg_train, reload_ckpt_path):
 
 def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, data_dict, stage, coarse_ckpt_path=None):
     # init
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if abs(cfg_model.world_bound_scale - 1) > 1e-9:
         xyz_shift = (xyz_max - xyz_min) * (cfg_model.world_bound_scale - 1) / 2
         xyz_min -= xyz_shift
@@ -389,9 +400,9 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
     # init batch rays sampler
     def gather_training_rays():
         if data_dict['irregular_shape']:
-            rgb_tr_ori = [images[i].to('cpu' if cfg.data.load2gpu_on_the_fly else device) for i in i_train]
+            rgb_tr_ori = [images[i].to('cpu' if cfg.data.load2gpu_on_the_fly else 'cuda') for i in i_train]
         else:
-            rgb_tr_ori = images[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device)
+            rgb_tr_ori = images[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else 'cuda')
 
         if cfg_train.ray_sampler == 'in_maskcache':
             rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = dvgo.get_training_rays_in_maskcache_sampling(
@@ -483,10 +494,10 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             raise NotImplementedError
 
         if cfg.data.load2gpu_on_the_fly:
-            target = target.to(device)
-            rays_o = rays_o.to(device)
-            rays_d = rays_d.to(device)
-            viewdirs = viewdirs.to(device)
+            target = target.cuda()
+            rays_o = rays_o.cuda()
+            rays_d = rays_d.cuda()
+            viewdirs = viewdirs.cuda()
 
         # volume rendering
         render_result = model(
@@ -646,11 +657,8 @@ if __name__=='__main__':
     cfg = mmcv.Config.fromfile(args.config)
     torch.cuda.set_device(args.gpu)
     # init enviroment
-    if torch.cuda.is_available():
-        torch.set_default_tensor_type('torch.cuda.FloatTensor')
-        device = torch.device('cuda')
-    else:
-        device = torch.device('cpu')
+    assert torch.cuda.is_available()
+    torch.set_default_tensor_type('torch.cuda.FloatTensor')
     seed_everything()
 
     # load images / poses / camera settings / data split
@@ -682,7 +690,7 @@ if __name__=='__main__':
         print('Export coarse visualization...')
         with torch.no_grad():
             ckpt_path = os.path.join(cfg.basedir, cfg.expname, 'coarse_last.tar')
-            model = utils.load_model(dvgo.DirectVoxGO, ckpt_path).to(device)
+            model = utils.load_model(dvgo.DirectVoxGO, ckpt_path).cuda()
             alpha = model.activate_density(model.density.get_dense_grid()).squeeze().cpu().numpy()
             rgb = torch.sigmoid(model.k0.get_dense_grid()).squeeze().permute(1,2,3,0).cpu().numpy()
         np.savez_compressed(args.export_coarse_only, alpha=alpha, rgb=rgb)
@@ -706,7 +714,7 @@ if __name__=='__main__':
             model_class = dcvgo.DirectContractedVoxGO
         else:
             model_class = dvgo.DirectVoxGO
-        model = utils.load_model(model_class, ckpt_path).to(device)
+        model = utils.load_model(model_class, ckpt_path).cuda()
         stepsize = cfg.fine_model_and_render.stepsize
         render_viewpoints_kwargs = {
             'model': model,

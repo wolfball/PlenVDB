@@ -91,13 +91,13 @@ std::vector<torch::Tensor> infer_t_minmax_cuda(
 
   AT_DISPATCH_FLOATING_TYPES(rays_o.type(), "infer_t_minmax_cuda", ([&] {
     infer_t_minmax_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        rays_o.data<scalar_t>(),
-        rays_d.data<scalar_t>(),
-        xyz_min.data<scalar_t>(),
-        xyz_max.data<scalar_t>(),
+        rays_o.data_ptr<scalar_t>(),
+        rays_d.data_ptr<scalar_t>(),
+        xyz_min.data_ptr<scalar_t>(),
+        xyz_max.data_ptr<scalar_t>(),
         near, far, n_rays,
-        t_min.data<scalar_t>(),
-        t_max.data<scalar_t>());
+        t_min.data_ptr<scalar_t>(),
+        t_max.data_ptr<scalar_t>());
   }));
 
   return {t_min, t_max};
@@ -110,12 +110,12 @@ torch::Tensor infer_n_samples_cuda(torch::Tensor rays_d, torch::Tensor t_min, to
   const int blocks = (n_rays + threads - 1) / threads;
   AT_DISPATCH_FLOATING_TYPES(t_min.type(), "infer_n_samples_cuda", ([&] {
     infer_n_samples_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        rays_d.data<scalar_t>(),
-        t_min.data<scalar_t>(),
-        t_max.data<scalar_t>(),
+        rays_d.data_ptr<scalar_t>(),
+        t_min.data_ptr<scalar_t>(),
+        t_max.data_ptr<scalar_t>(),
         stepdist,
         n_rays,
-        n_samples.data<int64_t>());
+        n_samples.data_ptr<int64_t>());
   }));
   return n_samples;
 }
@@ -128,12 +128,12 @@ std::vector<torch::Tensor> infer_ray_start_dir_cuda(torch::Tensor rays_o, torch:
   auto rays_dir = torch::empty_like(rays_o);
   AT_DISPATCH_FLOATING_TYPES(rays_o.type(), "infer_ray_start_dir_cuda", ([&] {
     infer_ray_start_dir_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        rays_o.data<scalar_t>(),
-        rays_d.data<scalar_t>(),
-        t_min.data<scalar_t>(),
+        rays_o.data_ptr<scalar_t>(),
+        rays_d.data_ptr<scalar_t>(),
+        t_min.data_ptr<scalar_t>(),
         n_rays,
-        rays_start.data<scalar_t>(),
-        rays_dir.data<scalar_t>());
+        rays_start.data_ptr<scalar_t>(),
+        rays_dir.data_ptr<scalar_t>());
   }));
   return {rays_start, rays_dir};
 }
@@ -212,11 +212,11 @@ std::vector<torch::Tensor> sample_pts_on_rays_cuda(
   const int total_len = N_steps.sum().item<int>();
   auto ray_id = torch::zeros({total_len}, torch::dtype(torch::kInt64).device(torch::kCUDA));
   __set_1_at_ray_seg_start<<<(n_rays+threads-1)/threads, threads>>>(
-        ray_id.data<int64_t>(), N_steps_cumsum.data<int64_t>(), n_rays);
+        ray_id.data_ptr<int64_t>(), N_steps_cumsum.data_ptr<int64_t>(), n_rays);
   ray_id.cumsum_(0);
   auto step_id = torch::empty({total_len}, ray_id.options());
   __set_step_id<<<(total_len+threads-1)/threads, threads>>>(
-        step_id.data<int64_t>(), ray_id.data<int64_t>(), N_steps_cumsum.data<int64_t>(), total_len);
+        step_id.data_ptr<int64_t>(), ray_id.data_ptr<int64_t>(), N_steps_cumsum.data_ptr<int64_t>(), total_len);
 
   // Compute the global xyz of each point
   auto rays_start_dir = infer_ray_start_dir_cuda(rays_o, rays_d, t_min);
@@ -228,15 +228,15 @@ std::vector<torch::Tensor> sample_pts_on_rays_cuda(
 
   AT_DISPATCH_FLOATING_TYPES(rays_o.type(), "sample_pts_on_rays_cuda", ([&] {
     sample_pts_on_rays_cuda_kernel<scalar_t><<<(total_len+threads-1)/threads, threads>>>(
-        rays_start.data<scalar_t>(),
-        rays_dir.data<scalar_t>(),
-        xyz_min.data<scalar_t>(),
-        xyz_max.data<scalar_t>(),
-        ray_id.data<int64_t>(),
-        step_id.data<int64_t>(),
+        rays_start.data_ptr<scalar_t>(),
+        rays_dir.data_ptr<scalar_t>(),
+        xyz_min.data_ptr<scalar_t>(),
+        xyz_max.data_ptr<scalar_t>(),
+        ray_id.data_ptr<int64_t>(),
+        step_id.data_ptr<int64_t>(),
         stepdist, total_len,
-        rays_pts.data<scalar_t>(),
-        mask_outbbox.data<bool>());
+        rays_pts.data_ptr<scalar_t>(),
+        mask_outbbox.data_ptr<bool>());
   }));
   return {rays_pts, mask_outbbox, ray_id, step_id, N_steps, t_min, t_max};
 }
@@ -281,13 +281,13 @@ std::vector<torch::Tensor> sample_ndc_pts_on_rays_cuda(
 
   AT_DISPATCH_FLOATING_TYPES(rays_o.type(), "sample_ndc_pts_on_rays_cuda", ([&] {
     sample_ndc_pts_on_rays_cuda_kernel<scalar_t><<<(n_rays*N_samples+threads-1)/threads, threads>>>(
-        rays_o.data<scalar_t>(),
-        rays_d.data<scalar_t>(),
-        xyz_min.data<scalar_t>(),
-        xyz_max.data<scalar_t>(),
+        rays_o.data_ptr<scalar_t>(),
+        rays_d.data_ptr<scalar_t>(),
+        xyz_min.data_ptr<scalar_t>(),
+        xyz_max.data_ptr<scalar_t>(),
         N_samples, n_rays,
-        rays_pts.data<scalar_t>(),
-        mask_outbbox.data<bool>());
+        rays_pts.data_ptr<scalar_t>(),
+        mask_outbbox.data_ptr<bool>());
   }));
   return {rays_pts, mask_outbbox};
 }
@@ -349,12 +349,12 @@ torch::Tensor sample_bg_pts_on_rays_cuda(
 
   AT_DISPATCH_FLOATING_TYPES(rays_o.type(), "sample_bg_pts_on_rays_cuda", ([&] {
     sample_bg_pts_on_rays_cuda_kernel<scalar_t><<<(n_rays*N_samples+threads-1)/threads, threads>>>(
-        rays_o.data<scalar_t>(),
-        rays_d.data<scalar_t>(),
-        t_max.data<scalar_t>(),
+        rays_o.data_ptr<scalar_t>(),
+        rays_d.data_ptr<scalar_t>(),
+        t_max.data_ptr<scalar_t>(),
         bg_preserve,
         N_samples, n_rays,
-        rays_pts.data<scalar_t>());
+        rays_pts.data_ptr<scalar_t>());
   }));
   return rays_pts;
 }
@@ -412,11 +412,11 @@ torch::Tensor maskcache_lookup_cuda(
 
   AT_DISPATCH_FLOATING_TYPES(xyz.type(), "maskcache_lookup_cuda", ([&] {
     maskcache_lookup_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        world.data<bool>(),
-        xyz.data<scalar_t>(),
-        out.data<bool>(),
-        xyz2ijk_scale.data<scalar_t>(),
-        xyz2ijk_shift.data<scalar_t>(),
+        world.data_ptr<bool>(),
+        xyz.data_ptr<scalar_t>(),
+        out.data_ptr<bool>(),
+        xyz2ijk_scale.data_ptr<scalar_t>(),
+        xyz2ijk_shift.data_ptr<scalar_t>(),
         sz_i, sz_j, sz_k, n_pts);
   }));
 
@@ -471,10 +471,10 @@ std::vector<torch::Tensor> raw2alpha_cuda(torch::Tensor density, const float shi
 
   AT_DISPATCH_FLOATING_TYPES(density.type(), "raw2alpha_cuda", ([&] {
     raw2alpha_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        density.data<scalar_t>(),
+        density.data_ptr<scalar_t>(),
         shift, interval, n_pts,
-        exp_d.data<scalar_t>(),
-        alpha.data<scalar_t>());
+        exp_d.data_ptr<scalar_t>(),
+        alpha.data_ptr<scalar_t>());
   }));
 
   return {exp_d, alpha};
@@ -494,10 +494,10 @@ std::vector<torch::Tensor> raw2alpha_nonuni_cuda(torch::Tensor density, const fl
 
   AT_DISPATCH_FLOATING_TYPES(density.type(), "raw2alpha_cuda", ([&] {
     raw2alpha_nonuni_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        density.data<scalar_t>(),
-        shift, interval.data<scalar_t>(), n_pts,
-        exp_d.data<scalar_t>(),
-        alpha.data<scalar_t>());
+        density.data_ptr<scalar_t>(),
+        shift, interval.data_ptr<scalar_t>(), n_pts,
+        exp_d.data_ptr<scalar_t>(),
+        alpha.data_ptr<scalar_t>());
   }));
 
   return {exp_d, alpha};
@@ -542,10 +542,10 @@ torch::Tensor raw2alpha_backward_cuda(torch::Tensor exp_d, torch::Tensor grad_ba
 
   AT_DISPATCH_FLOATING_TYPES(exp_d.type(), "raw2alpha_backward_cuda", ([&] {
     raw2alpha_backward_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        exp_d.data<scalar_t>(),
-        grad_back.data<scalar_t>(),
+        exp_d.data_ptr<scalar_t>(),
+        grad_back.data_ptr<scalar_t>(),
         interval, n_pts,
-        grad.data<scalar_t>());
+        grad.data_ptr<scalar_t>());
   }));
 
   return grad;
@@ -564,10 +564,10 @@ torch::Tensor raw2alpha_nonuni_backward_cuda(torch::Tensor exp_d, torch::Tensor 
 
   AT_DISPATCH_FLOATING_TYPES(exp_d.type(), "raw2alpha_backward_cuda", ([&] {
     raw2alpha_nonuni_backward_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        exp_d.data<scalar_t>(),
-        grad_back.data<scalar_t>(),
-        interval.data<scalar_t>(), n_pts,
-        grad.data<scalar_t>());
+        exp_d.data_ptr<scalar_t>(),
+        grad_back.data_ptr<scalar_t>(),
+        interval.data_ptr<scalar_t>(), n_pts,
+        grad.data_ptr<scalar_t>());
   }));
 
   return grad;
@@ -631,20 +631,20 @@ std::vector<torch::Tensor> alpha2weight_cuda(torch::Tensor alpha, torch::Tensor 
   }
 
   __set_i_for_segment_start_end<<<(n_pts+threads-1)/threads, threads>>>(
-          ray_id.data<int64_t>(), n_pts, i_start.data<int64_t>(), i_end.data<int64_t>());
+          ray_id.data_ptr<int64_t>(), n_pts, i_start.data_ptr<int64_t>(), i_end.data_ptr<int64_t>());
   i_end[ray_id[n_pts-1]] = n_pts;
 
   const int blocks = (n_rays + threads - 1) / threads;
 
   AT_DISPATCH_FLOATING_TYPES(alpha.type(), "alpha2weight_cuda", ([&] {
     alpha2weight_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        alpha.data<scalar_t>(),
+        alpha.data_ptr<scalar_t>(),
         n_rays,
-        weight.data<scalar_t>(),
-        T.data<scalar_t>(),
-        alphainv_last.data<scalar_t>(),
-        i_start.data<int64_t>(),
-        i_end.data<int64_t>());
+        weight.data_ptr<scalar_t>(),
+        T.data_ptr<scalar_t>(),
+        alphainv_last.data_ptr<scalar_t>(),
+        i_start.data_ptr<int64_t>(),
+        i_end.data_ptr<int64_t>());
   }));
 
   return {weight, T, alphainv_last, i_start, i_end};
@@ -691,16 +691,16 @@ torch::Tensor alpha2weight_backward_cuda(
 
   AT_DISPATCH_FLOATING_TYPES(alpha.type(), "alpha2weight_backward_cuda", ([&] {
     alpha2weight_backward_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        alpha.data<scalar_t>(),
-        weight.data<scalar_t>(),
-        T.data<scalar_t>(),
-        alphainv_last.data<scalar_t>(),
-        i_start.data<int64_t>(),
-        i_end.data<int64_t>(),
+        alpha.data_ptr<scalar_t>(),
+        weight.data_ptr<scalar_t>(),
+        T.data_ptr<scalar_t>(),
+        alphainv_last.data_ptr<scalar_t>(),
+        i_start.data_ptr<int64_t>(),
+        i_end.data_ptr<int64_t>(),
         n_rays,
-        grad_weights.data<scalar_t>(),
-        grad_last.data<scalar_t>(),
-        grad.data<scalar_t>());
+        grad_weights.data_ptr<scalar_t>(),
+        grad_last.data_ptr<scalar_t>(),
+        grad.data_ptr<scalar_t>());
   }));
 
   return grad;

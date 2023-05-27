@@ -21,7 +21,7 @@ to8b = lambda x : (255*np.clip(x,0,1)).astype(np.uint8)
 def create_optimizer_or_freeze_model(model, cfg_train, global_step):
     decay_steps = cfg_train.lrate_decay * 1000
     decay_factor = 0.1 ** (global_step/decay_steps)
-
+    gridtype = model.density_type
     param_group = []
     vdb_param_group = []
     for k in cfg_train.keys():
@@ -45,7 +45,7 @@ def create_optimizer_or_freeze_model(model, cfg_train, global_step):
                     param = param.parameters()
                 param_group.append({'params': param, 'lr': lr, 'skip_zero_grad': (k in cfg_train.skip_zero_grad_fields)})                
             elif k in ['density', 'k0']:
-                if type(param) == VDBGrid:
+                if gridtype == 'VDBGrid':
                     vdb_param_group.append({'params': param, 'lr': lr, 'skip_zero_grad': (k in cfg_train.skip_zero_grad_fields)})
                 else:
                     param_group.append({'params': param.parameters(), 'lr': lr, 'skip_zero_grad': (k in cfg_train.skip_zero_grad_fields)})  

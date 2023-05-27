@@ -1,6 +1,7 @@
 #include "plenvdb.h"
 
 PYBIND11_MODULE(plenvdb, m){
+    // VDB that stores 1-d data
     py::class_<DensityVDB>(m, "DensityVDB")
         .def(py::init<const std::vector<int>, const int>())
         .def("setValuesOn_bymask", [](DensityVDB &p, py::buffer mask, const float val){
@@ -38,7 +39,8 @@ PYBIND11_MODULE(plenvdb, m){
             return p.copyFromDense(static_cast<float*>(info.ptr), info.size);})
         .def("setReso", &DensityVDB::setReso)
         .def("total_variation_add_grad", &DensityVDB::total_variation_add_grad);
-    
+
+    // VDB that stores 3n-d data
     py::class_<ColorVDB>(m, "ColorVDB")
         .def(py::init<std::vector<int>, const int>())
         .def("forward", [](ColorVDB &p, py::buffer x, py::buffer y, py::buffer z){

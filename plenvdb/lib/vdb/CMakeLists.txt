@@ -8,7 +8,7 @@ find_package(PythonLibs 3.7 REQUIRED)
 include_directories(
     ${CMAKE_INSTALL_PREFIX}/include
     ${PYTHON_INCLUDE_DIRS}
-    /usr/local/lib/python3.7/dist-packages/pybind11/include
+    /home/hyan/.conda/envs/plenvdb/lib/python3.7/site-packages/pybind11/include # change to your pybind path
 )
 
 LINK_DIRECTORIES(
