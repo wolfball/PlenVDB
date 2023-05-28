@@ -12,6 +12,11 @@ Code release for the CVPR 2023 paper "PlenVDB: Memory Efficient VDB-Based Radian
 *Han Yan, Celong Liu, Chao Ma, Xing Mei*
 
 
+## Visualization
+
+
+
+
 ## Table of Contents:
 - [News](#news)  
 - [File Tree](#filetree)  
@@ -128,21 +133,32 @@ Modify configurations in **PlenVDB/plenvdb/configs** to indicate the **datadir**
 
 ## Training <a name="training"></a>
 
-Run for mic
+Run for mic and get finedensity.vdb and finecolor.vdb
 
 ```bash
-# cd PlenVDB/plenvdb/
-python run.py --config configs/nerf/mic.py # --render_test
+cd PlenVDB/plenvdb/
+python run.py --config configs/nerf/mic.py 
+```
+
+Merge two VDBs into one: mergedidxs.vdb and mergeddata.npz
+
+```bash
 python vdb_compression.py --basedir logs/nerf_synthetic/ --scenes mic
-python run.py --config configs/nerf/mic.py --render_test --render_only --use_mergedvdb
+```
+
+Render video with merged VDB
+
+```bash
+python run.py --config configs/nerf/mic.py --render_video --render_only --use_mergedvdb
 ```
 
 
 ## TODO List <a name="todos"></a>
 
-- [ ] Update the dependency to OpenVDB10.0.2 (OpenVDB9.1.1 at now)
-- [ ] Support renderer for face-forward and unbounded scenes
+- [ ] Update the dependency to OpenVDB10.0.2 (OpenVDB9.1.1 at now).
+- [ ] Support renderer for face-forward and unbounded scenes.
 - [ ] Release code for rendering VDB on multiply platforms, e.g. iOS, Android, etc.
+- [ ] Support pytorch extension.
 
 ## Citation
 
