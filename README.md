@@ -24,7 +24,7 @@ Code release for the CVPR 2023 paper "PlenVDB: Memory Efficient VDB-Based Radian
 
 
 
-Download pretrained DensityVDB and then you can check the geometry of the objects in the [blender](https://www.blender.org/).
+Download [pretrained DensityVDB](https://drive.google.com/drive/folders/12KvARcTXf1JY7yjevbn1T6LqswUCBRB2?usp=drive_link) and then you can check the geometry of the objects in the [Blender](https://www.blender.org/).
 
 
 
