@@ -4,7 +4,7 @@
    <img src='figs/teaser.png' alt='teaser'> 
 </p>
 
-### [project page](https://plenvdb.github.io/) | [paper](https://openaccess.thecvf.com/content/CVPR2023/papers/Yan_PlenVDB_Memory_Efficient_VDB-Based_Radiance_Fields_for_Fast_Training_and_CVPR_2023_paper.pdf)
+### [project page](https://plenvdb.github.io/) | [paper](https://openaccess.thecvf.com/content/CVPR2023/papers/Yan_PlenVDB_Memory_Efficient_VDB-Based_Radiance_Fields_for_Fast_Training_and_CVPR_2023_paper.pdf) | [video](https://www.youtube.com/watch?v=Q_SDJiMugxk)
 
 
 Code release for the CVPR 2023 paper "PlenVDB: Memory Efficient VDB-Based Radiance Fields for Fast Training and Rendering"
@@ -14,6 +14,17 @@ Code release for the CVPR 2023 paper "PlenVDB: Memory Efficient VDB-Based Radian
 
 ## Visualization
 
+<!-- https://github.com/wolfball/PlenVDB/assets/67772039/17d3b58c-12ab-4788-944e-b1b6bc4f1524.mp4 -->
+
+<!-- https://github.com/wolfball/PlenVDB/assets/67772039/43b80d39-e655-48f6-8620-28fa964196c6.mp4 -->
+
+<!-- https://github.com/wolfball/PlenVDB/assets/67772039/d25d2dc9-4a88-4313-b631-445c8b8a341f -->
+
+<!-- https://github.com/wolfball/PlenVDB/assets/67772039/88d39ed0-0b70-4412-b894-1e7fecf6e429 -->
+
+
+
+Download pretrained DensityVDB and then you can check the geometry of the objects in the [blender](https://www.blender.org/).
 
 
 
