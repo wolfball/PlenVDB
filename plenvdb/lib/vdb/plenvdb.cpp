@@ -1,7 +1,7 @@
 #include "plenvdb.h"
 
 PYBIND11_MODULE(plenvdb, m){
-    // VDB that stores 1-d data
+    /// @brief DataVDB for density
     py::class_<DensityVDB>(m, "DensityVDB")
         .def(py::init<const std::vector<int>, const int>())
         .def("setValuesOn_bymask", [](DensityVDB &p, py::buffer mask, const float val){
@@ -40,7 +40,7 @@ PYBIND11_MODULE(plenvdb, m){
         .def("setReso", &DensityVDB::setReso)
         .def("total_variation_add_grad", &DensityVDB::total_variation_add_grad);
 
-    // VDB that stores 3n-d data
+    /// @brief DataVDB for color
     py::class_<ColorVDB>(m, "ColorVDB")
         .def(py::init<std::vector<int>, const int>())
         .def("forward", [](ColorVDB &p, py::buffer x, py::buffer y, py::buffer z){
@@ -77,6 +77,7 @@ PYBIND11_MODULE(plenvdb, m){
         })
         .def("total_variation_add_grad", &ColorVDB::total_variation_add_grad);
 
+    /// @brief OptVDB for density
     py::class_<DensityOpt>(m, "DensityOpt")
         .def(py::init<DensityVDB& , const float, const float, const float, const float>())
         .def("load_from", &DensityOpt::load_from)
@@ -103,6 +104,7 @@ PYBIND11_MODULE(plenvdb, m){
         .def("setBeta1", &DensityOpt::setBeta1)
         .def("setStep", &DensityOpt::setStep);
 
+    /// @brief OptVDB for color
     py::class_<ColorOpt>(m, "ColorOpt")
         .def(py::init<ColorVDB&, const float, const float, const float, const float>())
         .def("load_from", &ColorOpt::load_from)
@@ -128,39 +130,10 @@ PYBIND11_MODULE(plenvdb, m){
         .def("setBeta0", &ColorOpt::setBeta0)
         .def("setBeta1", &ColorOpt::setBeta1)
         .def("setStep", &ColorOpt::setStep);
-    py::class_<Renderer>(m, "Renderer")
-        .def(py::init<DensityVDB&, ColorVDB&, int, int, int>())
-        .def("load_params", [](Renderer &p, py::buffer w0, py::buffer b0, py::buffer w1, py::buffer b1, py::buffer w2, py::buffer b2){
-            py::buffer_info info_w0 = w0.request();
-            py::buffer_info info_b0 = b0.request();
-            py::buffer_info info_w1 = w1.request();
-            py::buffer_info info_b1 = b1.request();
-            py::buffer_info info_w2 = w2.request();
-            py::buffer_info info_b2 = b2.request();
-            return p.load_params(
-                static_cast<float*>(info_w0.ptr),
-                static_cast<float*>(info_b0.ptr),
-                static_cast<float*>(info_w1.ptr),
-                static_cast<float*>(info_b1.ptr),
-                static_cast<float*>(info_w2.ptr),
-                static_cast<float*>(info_b2.ptr));})
-        .def("setHW", &Renderer::setHW)
-        .def("setOptions", &Renderer::setOptions)
-        .def("load_maskvdb", &Renderer::load_maskvdb)
-        .def("setSceneInfo", [](Renderer &p, py::buffer K, py::buffer xyz_min, py::buffer xyz_max){
-            py::buffer_info info_K = K.request();
-            py::buffer_info info_xyzmin = xyz_min.request();
-            py::buffer_info info_xyzmax = xyz_max.request();
-            return p.setSceneInfo(static_cast<float*>(info_K.ptr), static_cast<float*>(info_xyzmin.ptr), static_cast<float*>(info_xyzmax.ptr));
-        })
-        .def("input_a_c2w", [](Renderer &p, py::buffer c2w){
-            py::buffer_info info_c2w = c2w.request();
-            return p.input_a_c2w(static_cast<float*>(info_c2w.ptr));
-        })
-        .def("render_an_image", &Renderer::render_an_image)
-        .def("output_an_image", &Renderer::output_an_image);
+
+    /// @brief Renderer w. mergence
     py::class_<MGRenderer>(m, "MGRenderer")
-        .def(py::init<int, int, int, std::vector<int>, int>())
+        .def(py::init<int, int, int, int>())
         .def("load_params", [](MGRenderer &p, py::buffer w0, py::buffer b0, py::buffer w1, py::buffer b1, py::buffer w2, py::buffer b2){
             py::buffer_info info_w0 = w0.request();
             py::buffer_info info_b0 = b0.request();
@@ -175,18 +148,17 @@ PYBIND11_MODULE(plenvdb, m){
                 static_cast<float*>(info_b1.ptr),
                 static_cast<float*>(info_w2.ptr),
                 static_cast<float*>(info_b2.ptr));})
-        .def("setHW", &MGRenderer::setHW)
-        .def("setOptions", &MGRenderer::setOptions)
+        .def("setKwargs", &MGRenderer::setKwargs)
         .def("load_data", [](MGRenderer &p, py::buffer ddata, py::buffer cdata, std::string vdbdir, int N){
             py::buffer_info infod = ddata.request();
             py::buffer_info infoc = cdata.request();
             return p.load_data(static_cast<float*>(infod.ptr), static_cast<float*>(infoc.ptr), vdbdir, N);
         })
-        .def("setSceneInfo", [](MGRenderer &p, py::buffer K, py::buffer xyz_min, py::buffer xyz_max){
+        .def("setScene", [](MGRenderer &p, std::vector<int> reso, py::buffer K, py::buffer xyz_min, py::buffer xyz_max){
             py::buffer_info info_K = K.request();
             py::buffer_info info_xyzmin = xyz_min.request();
             py::buffer_info info_xyzmax = xyz_max.request();
-            return p.setSceneInfo(static_cast<float*>(info_K.ptr), static_cast<float*>(info_xyzmin.ptr), static_cast<float*>(info_xyzmax.ptr));
+            return p.setScene(reso, static_cast<float*>(info_K.ptr), static_cast<float*>(info_xyzmin.ptr), static_cast<float*>(info_xyzmax.ptr));
         })
         .def("input_a_c2w", [](MGRenderer &p, py::buffer c2w){
             py::buffer_info info_c2w = c2w.request();
@@ -196,4 +168,5 @@ PYBIND11_MODULE(plenvdb, m){
         .def("getTimer", &MGRenderer::getTimer)
         .def("render_an_image", &MGRenderer::render_an_image)
         .def("output_an_image", &MGRenderer::output_an_image);
+
 }

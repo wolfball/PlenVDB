@@ -5,18 +5,7 @@
     
     \brief Implements a sparse-volumn data structure based on VDB to accelerate NeRF training and rendering.
 
-    \note There are some limitations in this version:
-          (1) Only be used to train bounded scene (e.g. nerf_synthetic)
-          (2) We have not updated the topology fo data during training, so in training stage the data is always dense. To make fully use
-              of VDB, sparse data in training is preferred. 
-          (3) In future, stream will be used in CUDA acceleration
-          (4) In future, merge @MaskGrid in DVGO to plenvdb.h
-          (5) @save_to function is not optimal while many leaf can be background value.
-          (6) @load_from function will modify the reso (may cause bugs in special cases...)
-          (7) Updated NanoVDB has Accessor with @probeLeaf which can improve @accumulate
-          (8) Updated NanoVDB has IndexGrid which can replace GridType
-
-    Overview: There are four parts implemented in this file: GridType, VDBType, OptType and Renderer.
+    \note  Overview: There are four parts implemented in this file: GridType, VDBType, OptType and Renderer.
         
         GridType -  The basic data structure of PlenVDB: @BaseGrid, and two derived data structures: @ScaleGrid and @VectorGrid.
                     ScaleGrid contains only one FloatGrid, while VectorGrid contains @nVec Vec3fGrids. This part can not be interacted 
@@ -28,7 +17,7 @@
         OptType  -  Adam optimizer used for training: @BaseOptimizer, @DensityOpt and @ColorOpt. Each optimizer contains an exp_avg and
                     an exp_avg_sq, both are a type of @BaseGrid.
 
-        Renderer -  Used for fast rendering, not well implemented. 
+        Renderer -  Used for fast rendering:  @MGRenderer. 
 */
 
 
@@ -78,8 +67,24 @@ namespace py = pybind11;
 
 // --------------------------> GridType <------------------------------------
 
-void density_copyFromDense(NanoFloatGrid*, float*, const int, const int, const int, const int);
-void color_copyFromDense(NanoVec3fGrid**, float*, const int, const int, const int, const int, const int);
+void density_copyFromDense(
+    NanoFloatGrid* grid, 
+    float* arr, 
+    const int rx,
+    const int ry, 
+    const int rz, 
+    const int nleafCount
+);
+void color_copyFromDense(
+    NanoVec3fGrid** grid, 
+    float* arr, 
+    const int rx, 
+    const int ry, 
+    const int rz, 
+    const int nleafCount, 
+    const int num
+);
+
 
 class BaseGrid{
 public:
@@ -299,15 +304,87 @@ private:
 
 // --------------------------> VDBType <------------------------------------
 
-void density_forward(float*, float*, float*, float*, NanoFloatGrid*, const int);
-void density_forward_single(float*, int*, int*, int*, NanoFloatGrid*, const int);
-void density_backward(float* , float* , float* , float* , NanoFloatGrid* , const int);
+void density_forward(
+    float* gpuRes, 
+    float* xs, 
+    float* ys, 
+    float* zs, 
+    NanoFloatGrid* gpuGrid, 
+    const int N
+);
+void density_forward_single(
+    float* gpuRes, 
+    int* gpuPosi, 
+    int* gpuPosj, 
+    int* gpuPosk, 
+    NanoFloatGrid* gpuGrid, 
+    const int N)
+;
+void density_backward(
+    float* grads, 
+    float* xs, 
+    float* ys, 
+    float* zs, 
+    NanoFloatGrid* deviceGrid, 
+    const int N
+);
+void density_total_variation_add_grad(
+    NanoFloatGrid* grid,
+    NanoFloatGrid* grad,
+    float wx,
+    float wy,
+    float wz,
+    bool dense_mode,
+    const int nleafCount
+);
 
-void color_forward(float*, float*, float*, float*, NanoVec3fGrid**, const int, const int);
-void color_forward_single(float*, int*, int*, int*, NanoVec3fGrid**, const int, const int);
-void color_backward(float* , float* , float* , float* , NanoVec3fGrid** , const int , const int);
+void color_forward(
+    float* gpuRes, 
+    float* xs, 
+    float* ys, 
+    float* zs, 
+    NanoVec3fGrid** gpuGrids, 
+    const int N, 
+    const int num
+);
+void color_forward_single(
+    float* gpuRes, 
+    int* gpuPosi, 
+    int* gpuPosj, 
+    int* gpuPosk, 
+    NanoVec3fGrid** gpuGrids, 
+    const int N, 
+    const int num
+);
+void color_backward(
+    float* grads, 
+    float* xs, 
+    float* ys, 
+    float* zs, 
+    NanoVec3fGrid** grids, 
+    int N, 
+    int num
+);
+void color_total_variation_add_grad(
+    NanoVec3fGrid** grid,
+    NanoVec3fGrid** grad,
+    float wx,
+    float wy,
+    float wz,
+    bool dense_mode,
+    const int nleafCount,
+    int num
+);
 
-void setValuesOn_bymask_cuda(NanoFloatGrid*, bool*, const float, const int, const int, const int, const int);
+void setValuesOn_bymask_cuda(
+    NanoFloatGrid* grid, 
+    bool* mask, 
+    const float val, 
+    const int rx, 
+    const int ry, 
+    const int rz, 
+    const int nleafCount
+);
 
 template<typename SorVGrid>
 class BaseVDB{
@@ -327,7 +404,7 @@ public:
     // get values together with 8 neighbors for trilinear interpolation
     virtual py::array_t<float> forward(float*, float*, float*, int) = 0;
     virtual void backward(float*, float*, float*, float*, int) = 0;
-    void total_variation_add_grad(float, float, float, bool){};
+    virtual void total_variation_add_grad(float, float, float, bool) = 0;
     inline py::array_t<float> get_dense_grid(){return copyToDense();}
     virtual void load_from(const std::string &loaddir){
         auto resolution = grid.load_from(loaddir);
@@ -360,9 +437,9 @@ public:
         reso[0] = resolution[0]; reso[1] = resolution[1]; reso[2] = resolution[2];
         grid.create(1, reso); grad.create(1, reso);
     };
+
     py::array_t<float> forward(float* xs, float* ys, float* zs, const int N){
         // copy data {xs, ys, zs} from cpu to gpu
-        clock_t t1 = clock();
         const int ResBytes = N * sizeof(float); // bytes of the result
         float *res_ptr = (float*)malloc(ResBytes); 
         const int PosBytes = N * sizeof(float); // bytes of the posi, posj, posk
@@ -376,9 +453,7 @@ public:
         cudaMemcpy(gpu_ys, ys, PosBytes, cudaMemcpyHostToDevice);
         cudaMemcpy(gpu_zs, zs, PosBytes, cudaMemcpyHostToDevice);
         // forward stage in CUDA
-        clock_t t2 = clock();
         density_forward(gpu_res_ptr, gpu_xs, gpu_ys, gpu_zs, grid.deviceData(), N);
-        clock_t t3 = clock();
         // copy data from gpu to cpu
         cudaMemcpy(res_ptr, gpu_res_ptr, ResBytes, cudaMemcpyDeviceToHost);
         cudaFree(gpu_xs); cudaFree(gpu_ys); cudaFree(gpu_zs); 
@@ -386,14 +461,12 @@ public:
         // transfer data from float* to np.array
         py::array_t<float> res(N);
         memcpy(res.mutable_data(), res_ptr, ResBytes);
-        clock_t t4 = clock();
-        timer += (t2-t1+t4-t3) / (double)CLOCKS_PER_SEC;
         free(res_ptr);
         return res;
     }
+
     void backward(float* xs, float* ys, float* zs, float* graddata, int N){
         // backward
-        clock_t t1 = clock();
         const int ResBytes = N * sizeof(float);
         const int PosBytes = N * sizeof(float);
         float *gpu_res_ptr;
@@ -406,12 +479,11 @@ public:
         cudaMemcpy(gpu_xs, xs, PosBytes, cudaMemcpyHostToDevice);
         cudaMemcpy(gpu_ys, ys, PosBytes, cudaMemcpyHostToDevice);
         cudaMemcpy(gpu_zs, zs, PosBytes, cudaMemcpyHostToDevice);
-        clock_t t2 = clock();
-        timer += (t2-t1) / (double)CLOCKS_PER_SEC;
         density_backward(gpu_res_ptr, gpu_xs, gpu_ys, gpu_zs, grad.deviceData(), N);
         cudaFree(gpu_xs); cudaFree(gpu_ys); cudaFree(gpu_zs);
         cudaFree(gpu_res_ptr);
     }
+
     void setValuesOn_bymask(bool* mask, const float val, const int N){
         assert(N == reso[0] * reso[1] * reso[2]);
         const int ResBytes = N * sizeof(bool);
@@ -421,6 +493,13 @@ public:
         setValuesOn_bymask_cuda(grid.deviceData(), gpu_ptr, val, reso[0], reso[1], reso[2], grid.leafCount());
         cudaFree(gpu_ptr);
     }
+
+    void total_variation_add_grad(float wx, float wy, float wz, bool dense_mode){
+        const int nleafCount = grid.leafCount();
+        std::cout << "Not Supported Now...\n"; 
+        // density_total_variation_add_grad(grid.deviceData(), grad.deviceData(), wx, wy, wz, dense_mode, nleafCount);
+    }
+
     py::array_t<float> forward_single(int* posi, int* posj, int* posk, const int N){
         const int ResBytes = N * sizeof(float);
         float *res_ptr = (float*)malloc(ResBytes);
@@ -434,13 +513,9 @@ public:
         cudaMemcpy(gpu_ptri, posi, PosBytes, cudaMemcpyHostToDevice);
         cudaMemcpy(gpu_ptrj, posj, PosBytes, cudaMemcpyHostToDevice);
         cudaMemcpy(gpu_ptrk, posk, PosBytes, cudaMemcpyHostToDevice);
-        clock_t t1 = clock();
         density_forward_single(gpu_res_ptr, gpu_ptri, gpu_ptrj, gpu_ptrk, grid.deviceData(), N);
-        clock_t t2 = clock();
         cudaMemcpy(res_ptr, gpu_res_ptr, ResBytes, cudaMemcpyDeviceToHost);
         cudaFree(gpu_ptri); cudaFree(gpu_ptrj); cudaFree(gpu_ptrk); cudaFree(gpu_res_ptr);
-        std::cout << ">> Density Single Forward Time Used \n";
-        std::cout << "   getvalue:" << (t2-t1) / (double)CLOCKS_PER_SEC << std::endl;
         py::array_t<float> res(N);
         memcpy(res.mutable_data(), res_ptr, ResBytes);
         free(res_ptr);
@@ -458,7 +533,6 @@ public:
         grid.create(num, reso); grad.create(num, reso);
     };
     py::array_t<float> forward(float* xs, float* ys, float* zs, const int N){
-        clock_t t1 = clock();
         const int ResNum = N * ndim;
         const int ResBytes = ResNum * sizeof(float);
         float *res_ptr = (float*)malloc(ResBytes);
@@ -472,21 +546,16 @@ public:
         cudaMemcpy(gpu_xs, xs, PosBytes, cudaMemcpyHostToDevice);
         cudaMemcpy(gpu_ys, ys, PosBytes, cudaMemcpyHostToDevice);
         cudaMemcpy(gpu_zs, zs, PosBytes, cudaMemcpyHostToDevice);
-        clock_t t2 = clock();
         color_forward(gpu_res_ptr, gpu_xs, gpu_ys, gpu_zs, grid.deviceData(), N, num);
-        clock_t t3 = clock();
         cudaMemcpy(res_ptr, gpu_res_ptr, ResBytes, cudaMemcpyDeviceToHost);
         cudaFree(gpu_xs); cudaFree(gpu_ys); cudaFree(gpu_zs); cudaFree(gpu_res_ptr);
         py::array_t<float> res(ResNum);
         memcpy(res.mutable_data(), res_ptr, ResBytes);
-        clock_t t4 = clock();
-        timer += (t2-t1+t4-t3) / (double)CLOCKS_PER_SEC;
         free(res_ptr);
         return res;
     }
     void backward(float* xs, float* ys, float* zs, float* graddata, int N){
         // backward
-        clock_t t1= clock();
         const int ResBytes = N * ndim * sizeof(float);
         const int PosBytes = N * sizeof(float);
         float *gpu_xs, *gpu_ys, *gpu_zs;
@@ -499,10 +568,13 @@ public:
         cudaMemcpy(gpu_ys, ys, PosBytes, cudaMemcpyHostToDevice);
         cudaMemcpy(gpu_zs, zs, PosBytes, cudaMemcpyHostToDevice);
         cudaMemcpy(gpu_res_ptr, graddata, ResBytes, cudaMemcpyHostToDevice);
-        clock_t t2 = clock();
-        timer += (t2-t1) / (double)CLOCKS_PER_SEC;
         color_backward(gpu_res_ptr, gpu_xs, gpu_ys, gpu_zs, grad.deviceData(), N, num);
         cudaFree(gpu_xs); cudaFree(gpu_ys); cudaFree(gpu_zs); cudaFree(gpu_res_ptr);
+    }
+    void total_variation_add_grad(float wx, float wy, float wz, bool dense_mode){
+        const int nleafCount = grid.leafCount();
+        std::cout << "Not Supported Now...\n";
+        // color_total_variation_add_grad(grid.deviceData(), grad.deviceData(), wx, wy, wz, dense_mode, nleafCount, num);
     }
     py::array_t<float> forward_single(int* posi, int* posj, int* posk, const int N){
         const int ResNum = N * ndim;
@@ -519,9 +591,7 @@ public:
         cudaMemcpy(gpu_ptri, posi, PosBytes, cudaMemcpyHostToDevice);
         cudaMemcpy(gpu_ptrj, posj, PosBytes, cudaMemcpyHostToDevice);
         cudaMemcpy(gpu_ptrk, posk, PosBytes, cudaMemcpyHostToDevice);
-        clock_t t1 = clock();
         color_forward_single(gpu_res_ptr, gpu_ptri, gpu_ptrj, gpu_ptrk, grid.deviceData(), N, num);
-        clock_t t2 = clock();
         cudaMemcpy(res_ptr, gpu_res_ptr, ResBytes, cudaMemcpyDeviceToHost);
         cudaFree(gpu_ptri); cudaFree(gpu_ptrj); cudaFree(gpu_ptrk); cudaFree(gpu_res_ptr);
         py::array_t<float> res(ResNum);
@@ -535,25 +605,83 @@ public:
 
 void density_zero_grad(NanoFloatGrid*, const int);
 void density_updateData(
-    NanoFloatGrid*, NanoFloatGrid*, NanoFloatGrid*, NanoFloatGrid*,
-    const float, const float, const float, const float, const int);
+    NanoFloatGrid* data, 
+    NanoFloatGrid* grad,
+    NanoFloatGrid* exp_avg, 
+    NanoFloatGrid* exp_avg_sq,
+    const float stepsz, 
+    const float eps, 
+    const float beta0, 
+    const float beta1, 
+    const int nleafCount
+);
+
 void density_updateDataWithPerlr(
-    NanoFloatGrid*, NanoFloatGrid*, NanoFloatGrid*, NanoFloatGrid*, 
-    const float, const float, const float, const float, const int, NanoFloatGrid*);
+    NanoFloatGrid* data, 
+    NanoFloatGrid* grad, 
+    NanoFloatGrid* exp_avg, 
+    NanoFloatGrid* exp_avg_sq,
+    const float stepsz, 
+    const float eps, 
+    const float beta0, 
+    const float beta1, 
+    const int nleafCount, 
+    NanoFloatGrid* per_lr
+);
+
 void density_updateDataSkipGrad(
-    NanoFloatGrid*, NanoFloatGrid*, NanoFloatGrid*, NanoFloatGrid*,
-    const float, const float, const float, const float, const int);
+    NanoFloatGrid* data, 
+    NanoFloatGrid* grad, 
+    NanoFloatGrid* exp_avg, 
+    NanoFloatGrid* exp_avg_sq,
+    const float stepsz, 
+    const float eps, 
+    const float beta0, 
+    const float beta1, 
+    const int nleafCount
+);
 
 void color_zero_grad(NanoVec3fGrid**, const int, const int);
+
 void color_updateData(
-    NanoVec3fGrid**, NanoVec3fGrid**, NanoVec3fGrid**, NanoVec3fGrid**,
-    const float, const float, const float, const float, const int, const int);
+    NanoVec3fGrid** datas, 
+    NanoVec3fGrid** grads, 
+    NanoVec3fGrid** exp_avgs, 
+    NanoVec3fGrid** exp_avg_sqs,
+    const float stepsz, 
+    const float eps, 
+    const float beta0, 
+    const float beta1, 
+    const int nleafCount, 
+    const int num
+);
+
 void color_updateDataWithPerlr(
-    NanoVec3fGrid**, NanoVec3fGrid**, NanoVec3fGrid**, NanoVec3fGrid**, 
-    const float, const float, const float, const float, const int, const int, NanoFloatGrid*);
+    NanoVec3fGrid** datas, 
+    NanoVec3fGrid** grads, 
+    NanoVec3fGrid** exp_avgs,
+    NanoVec3fGrid** exp_avg_sqs,
+    const float stepsz, 
+    const float eps, 
+    const float beta0, 
+    const float beta1, 
+    const int nleafCount, 
+    const int num, 
+    NanoFloatGrid* per_lr
+);
+
 void color_updateDataSkipGrad(
-    NanoVec3fGrid**, NanoVec3fGrid**, NanoVec3fGrid**, NanoVec3fGrid**, 
-    const float, const float, const float, const float, const int, const int);
+    NanoVec3fGrid** datas, 
+    NanoVec3fGrid** grads, 
+    NanoVec3fGrid** exp_avgs, 
+    NanoVec3fGrid** exp_avg_sqs,
+    const float stepsz, 
+    const float eps, 
+    const float beta0, 
+    const float beta1, 
+    const int nleafCount, 
+    const int num
+);
 
 template<typename DorCVDB, typename SorVGrid>
 class BaseOptimizer{
@@ -662,84 +790,39 @@ public:
 };// ColorOpt
 
 // --------------------------> Renderer <------------------------------------
+/// @note When modifying @RenderKwargs, @SceneInfo or @MLP, keep "renderer.cuh" the same!
 
-void prepare_accs(NanoFloatGrid*, NanoVec3fGrid**, NanoFloatGrid*, NanoFloatAccT*, NanoVec3fAccT*, NanoFloatAccT*, int, int);
-void prepare_accs(NanoFloatGrid*, NanoVec3fGrid**, NanoFloatAccT*, NanoVec3fAccT*, int, int);
-void merge_two_vdbs(float*, NanoFloatGrid*, NanoVec3fGrid**, int, int, int);
-void render_an_image_cuda(
-    float* , const int , const int , 
-    float* , float* ,
-    float*, float*, float*, float*, int*,
-    float*, float*, int*, int*,
-    const float , const float , float* , float* , const float , 
-    int* , const float , const float , const float ,
-    const int , float* , float* , float* , float* , float* , float* , int , float ,
-    NanoFloatAccT*, NanoVec3fAccT*, cublasHandle_t, NanoFloatAccT*);
 
-class Renderer{
+/// @brief Args and pre-created variables for rendering
+struct RenderKwargs{
 public:
-    Renderer(DensityVDB& vdbd, ColorVDB& vdbc, int in_dim, int hid_dim, int depth):vdb_den(&vdbd), vdb_col(&vdbc){
-        assert(depth == 3);
-        H = 0; W = 0;
-        dim_in = in_dim; dim_hid = hid_dim; dim_out = 3;
-        maskAccs = nullptr;
-        has_mask = false;
-        cudaMalloc(&weight0, dim_in * dim_hid * sizeof(float));
-        cudaMalloc(&weight1, dim_hid * dim_hid * sizeof(float));
-        cudaMalloc(&weight2, dim_hid * dim_out * sizeof(float));
-        cudaMalloc(&bias0, dim_hid * sizeof(float));
-        cudaMalloc(&bias1, dim_hid * sizeof(float));
-        cudaMalloc(&bias2, dim_out * sizeof(float));
-        cublasStatus_t status = cublasCreate(&cuHandle);
-        if (status != CUBLAS_STATUS_SUCCESS)
-        {
-            if (status == CUBLAS_STATUS_NOT_INITIALIZED) {
-                std::cout << "CUBLAS 对象实例化出错" << std::endl;
-            }
-            getchar ();
-        }
-    }
-    ~Renderer(){
-        cudaFree(weight0); cudaFree(weight1); cudaFree(weight2); cudaFree(bias0); cudaFree(bias1); cudaFree(bias2);
-        cublasDestroy(cuHandle); cudaFree(gpuK);
-        cudaFree(gpuxyzmin); cudaFree(gpuxyzmax); cudaFree(gpureso);
-        if (has_mask) cudaFree(maskAccs);
-        if (H != 0) {
-            cudaFree(densityAccs); cudaFree(colorAccs); 
-            cudaFree(n_samples); cudaFree(steplens); cudaFree(pefeat);
-            cudaFree(i_starts); cudaFree(i_ends);
-            cudaFree(tmins); cudaFree(tmaxs);
-            cudaFree(rays_o); cudaFree(rays_d);
-                    free(res_ptr); 
-            cudaFree(data); 
-            cudaFree(gpuc2w);
-        }
-    }
-    void load_params(float* w0, float* b0, float* w1, float* b1, float* w2, float* b2){
-        cudaMemcpy(weight0, w0, dim_in * dim_hid * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(weight1, w1, dim_hid * dim_hid * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(weight2, w2, dim_hid * dim_out * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(bias0, b0, dim_hid * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(bias1, b1, dim_hid * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(bias2, b2, dim_out * sizeof(float), cudaMemcpyHostToDevice);
-    }
-    void setHW(int h, int w){
-        H = h; W = w;
-        int HW = H * W;
-        
-        cudaMalloc(&densityAccs, HW * sizeof(NanoFloatAccT));
-        cudaMalloc(&colorAccs, HW * vdb_col->num * sizeof(NanoVec3fAccT));
-        if (has_mask){
-            cudaMalloc(&maskAccs, HW * sizeof(NanoFloatAccT));
-            prepare_accs(vdb_den->grid.deviceData(), vdb_col->grid.deviceData(), vdbmask.deviceData(), 
-                densityAccs, colorAccs, maskAccs, HW, vdb_col->num);
-        }
-        else
-            prepare_accs(vdb_den->grid.deviceData(), vdb_col->grid.deviceData(), 
-                densityAccs, colorAccs, HW, vdb_col->num);
-        
+    // kwargs
+    float near, far;  // near plane and far plane
+    float stepdist;
+    float act_shift; 
+    float interval; 
+    float fast_color_thres; 
+    float bg; 
+    bool inverse_y;
+    int H, W;
+    int HW;
+
+    // variables
+    int* i_starts; 
+    int* i_ends; 
+    float* tmins; 
+    float* tmaxs; 
+    float* steplens; 
+    float* pefeat;
+    int* n_samples; 
+    float* rays_o; 
+    float* rays_d; 
+    float* data;    // output RGB data
+
+    void create(int hw, int Dpe){
+        HW = hw;
         cudaMalloc(&steplens, HW * sizeof(float));
-        cudaMalloc(&pefeat, HW * 27 * sizeof(float));
+        cudaMalloc(&pefeat, HW * Dpe * sizeof(float));
         cudaMalloc(&tmins, HW * sizeof(float));
         cudaMalloc(&tmaxs, HW * sizeof(float));
         cudaMalloc(&n_samples, HW * sizeof(int));
@@ -747,112 +830,61 @@ public:
         cudaMalloc(&rays_d, HW * 3 * sizeof(float));
         cudaMalloc(&i_starts, HW * sizeof(int));
         cudaMalloc(&i_ends, HW * sizeof(int));
-        res_ptr = (float*)malloc(HW*3*sizeof(float)); 
         cudaMalloc(&data, HW*3*sizeof(float));
-        cudaMalloc(&gpuc2w, 16 * sizeof(float)); 
-    }
-    void setSceneInfo(float* K, float* xyz_min, float* xyz_max){
-        cudaMalloc(&gpuK, 9 * sizeof(float)); cudaMemcpy(gpuK, K, 9 * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMalloc(&gpuxyzmin, 3 * sizeof(float)); cudaMemcpy(gpuxyzmin, xyz_min, 3 * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMalloc(&gpuxyzmax, 3 * sizeof(float)); cudaMemcpy(gpuxyzmax, xyz_max, 3 * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMalloc(&gpureso, 3 * sizeof(int)); cudaMemcpy(gpureso, vdb_den->reso, 3 * sizeof(int), cudaMemcpyHostToDevice);
-    }
-    void setOptions(float near, float far, float stepdist, float act_shift, float interval, float fast_color_thres, float bg, bool inverse_y){
-            this->near = near; this->far = far; this->stepdist = stepdist; this->act_shift = act_shift;
-            this->interval = interval; this->fast_color_thres = fast_color_thres; this->bg = bg;
-        }
-    void load_maskvdb(const std::string maskdir){
-        int tmp[3] = {1, 1, 1};
-        vdbmask.create(1, tmp);
-        has_mask = true;
-        auto resolution = vdbmask.load_from(maskdir);
     }
 
-    // render an image ...
-    void input_a_c2w(float* c2w){
-        assert(vdb_col->ndim + 27 == dim_in); assert(H != 0); assert(W != 0);
-        cudaMemcpy(gpuc2w, c2w, 16 * sizeof(float), cudaMemcpyHostToDevice);
+    void destory(){
+        cudaFree(steplens); cudaFree(pefeat); cudaFree(tmins); cudaFree(tmaxs); cudaFree(n_samples); 
+        cudaFree(rays_o); cudaFree(rays_d); cudaFree(i_starts); cudaFree(i_ends); cudaFree(data);
     }
-    void render_an_image()
-    {
-        clock_t t1 = clock();
-        render_an_image_cuda(
-            data, H, W, 
-            gpuc2w, gpuK,
-            steplens, pefeat, tmins, tmaxs, n_samples,
-            rays_o, rays_d, i_starts, i_ends,
-            near, 1e9, gpuxyzmin, gpuxyzmax, stepdist, 
-            gpureso, act_shift, interval, fast_color_thres, vdb_col->num, weight0, bias0, weight1, bias1, weight2, bias2, dim_hid, bg,
-            densityAccs, colorAccs, cuHandle, maskAccs);
-        clock_t t2 = clock();
-        std::cout << (t2-t1)/double(CLOCKS_PER_SEC) << "," << std::endl;
-    }
-    py::array_t<float> output_an_image(){
-        const int ResBytes = H * W * 3 * sizeof(float);
-        cudaMemcpy(res_ptr, data, ResBytes, cudaMemcpyDeviceToHost);
-        py::array_t<float> res(H * W * 3);
-        memcpy(res.mutable_data(), res_ptr, ResBytes);
-        return res;
-    }
-
-private:
-    float* data; float* res_ptr; float* gpuc2w; 
-    float near; float far; float stepdist; float act_shift; float interval; float fast_color_thres; float bg;
-    bool has_mask;
-    float* steplens; float* pefeat; float* tmins; float* tmaxs; 
-    int* n_samples; float* rays_o; float* rays_d; int* i_starts; int* i_ends; 
-    ScaleGrid vdbmask;
-    DensityVDB* vdb_den;
-    ColorVDB* vdb_col;
-    int dim_in;
-    int dim_hid;
-    int dim_out;
-    float* gpuK; float* gpuxyzmin; float* gpuxyzmax; int* gpureso; 
-    float* weight0;
-    float* bias0;
-    float* weight1;
-    float* bias1;
-    float* weight2;
-    float* bias2;
-    int H;
-    int W;
-    NanoFloatAccT* maskAccs;
-    NanoFloatAccT* densityAccs;
-    NanoVec3fAccT* colorAccs;
-    cublasHandle_t cuHandle;
-};// Renderer
+    
+};
 
 
-
-void render_an_image_cuda(
-    float* data, int H, int W, 
-    float* gpuc2w, float* gpuK,
-    bool inverse_y,
-    float* steplens, float* pefeat, float* tmins, float* tmaxs, int* n_samples,
-    float* rays_o, float* rays_d, int* i_starts, int* i_ends,
-    float near, float far, float* gpuxyzmin, float* gpuxyzmax, float stepdist, 
-    int* gpureso, float act_shift, float interval, float fast_color_thres, int Dcol, 
-    float* weight0, float* bias0, float* weight1, float* bias1, float* weight2, float* bias2, int dim_hid, float bg,
-    NanoFloatGrid* idxGrid, float* dendata, float* coldata, cublasHandle_t cuHandle);
-
-class MGRenderer{
+/// @brief Information about scene and camera intrinsics
+struct SceneInfo{
 public:
-    MGRenderer(
-        int in_dim, 
-        int hid_dim, 
-        int depth, 
-        std::vector<int> reso, 
-        int dim)
-    {
-        Din = in_dim; Dhid = hid_dim; Dout = 3;
-        assert(depth == 3);
-        cudaMalloc(&gpureso, 3 * sizeof(int)); 
-        cudaMemcpy(gpureso, reso.data(), 3 * sizeof(int), cudaMemcpyHostToDevice);
-        Dcol = dim;
-        Dpe = 27;
-        for (int i=0; i<6; i++) flags[i] = false;
-        H = 0; W = 0;
-        cudaMalloc(&w0, Din * Dhid * sizeof(float));
+    int* reso;      // resolution (3)
+    float* K;       // camera intrinsics (9)
+    float* xyz_min;  // min of bbox (3)
+    float* xyz_max;  // max of bbox (3)
+
+    void create(){
+        cudaMalloc(&reso, 3 * sizeof(int)); 
+        cudaMalloc(&K, 9 * sizeof(float)); 
+        cudaMalloc(&xyz_min, 3 * sizeof(float)); 
+        cudaMalloc(&xyz_max, 3 * sizeof(float)); 
+    }
+
+    void destory(){
+        cudaFree(reso); cudaFree(K); cudaFree(xyz_min); cudaFree(xyz_max); 
+    }
+
+    void load(int* reso, float* K, float* xyz_min, float* xyz_max){
+        cudaMemcpy(this->reso, reso, 3 * sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(this->K, K, 9 * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(this->xyz_min, xyz_min, 3 * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(this->xyz_max, xyz_max, 3 * sizeof(float), cudaMemcpyHostToDevice);
+    }
+};
+
+
+
+/// @brief 3-layer MLP (Din -> Dhid -> Dhid -> Dout) with ReLU activation
+///
+/// @note  The @Din-d input feature is concatenated by @Dcol-d color feature and @Dpe-d direction feature.
+///        For acceleration, we only compute once for each direction feature while those color features on
+///        the same ray are sharing the same direction feature.
+struct MLP{
+public:
+    int Din, Dhid, Dout;
+    int Dcol, Dpe;
+    float *w0, *b0, *w1, *b1, *w2, *b2;
+    cublasHandle_t cuHandle;
+    void create(int dcol, int dpe, int dhid, int dout){
+        Dcol = dcol; Dpe = dpe;
+        Din = dcol+dpe; Dhid = dhid; Dout = dout;
+        cudaMalloc(&w0, Din  * Dhid * sizeof(float));
         cudaMalloc(&w1, Dhid * Dhid * sizeof(float));
         cudaMalloc(&w2, Dhid * Dout * sizeof(float));
         cudaMalloc(&b0, Dhid * sizeof(float));
@@ -861,25 +893,67 @@ public:
         cublasStatus_t status = cublasCreate(&cuHandle);
         if (status != CUBLAS_STATUS_SUCCESS){
             if (status == CUBLAS_STATUS_NOT_INITIALIZED) {
-                std::cout << "CUBLAS 对象实例化出错" << std::endl;
+                std::cout << "CUBLAS status not initialized." << std::endl;
             }
             getchar ();
         }
     }
+    void destory(){
+        cudaFree(w0); 
+        cudaFree(w1); 
+        cudaFree(w2); 
+        cudaFree(b0); 
+        cudaFree(b1); 
+        cudaFree(b2);
+        cublasDestroy(cuHandle); 
+    }
+    void load(float* w0, float* w1, float* w2, float* b0, float* b1, float* b2){
+        cudaMemcpy(this->w0, w0, Din  * Dhid * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(this->w1, w1, Dhid * Dhid * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(this->w2, w2, Dhid * Dout * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(this->b0, b0, Dhid * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(this->b1, b1, Dhid * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(this->b2, b2, Dout * sizeof(float), cudaMemcpyHostToDevice);
+    }
+};
+
+
+void render_an_image_cuda(
+    RenderKwargs &args, 
+    MLP &mlp,
+    SceneInfo &scene,
+    float* gpuc2w,
+    NanoFloatGrid* idxGrid, 
+    float* dendata, 
+    float* coldata
+);
+
+
+/// @brief Renderer with a merged VDB and a 3-layer light-weight MLP for color mapping.
+class MGRenderer{
+public:
+
+    MGRenderer(
+        int dcol,  // dim of color feature
+        int dpe,   // dim of positional encoded direct feature
+        int dhid,  // dim of hidden layers
+        int dout)  // dim of output (3 for RGB)
+    {
+        for (int i=0; i<5; i++) flags[i] = false;
+        mlp.create(dcol, dpe, dhid, dout);
+        scene.create();
+    }
     ~MGRenderer(){
-        cudaFree(w0); cudaFree(w1); cudaFree(w2); cudaFree(b0); cudaFree(b1); cudaFree(b2);
-        cublasDestroy(cuHandle); cudaFree(gpureso);
+        mlp.destory();
+        scene.destory();
+        
         if (flags[0]){
             cudaFree(dendata); 
             cudaFree(coldata);
         }
-        if (flags[2]){
-            cudaFree(steplens); cudaFree(pefeat); cudaFree(tmins); cudaFree(tmaxs); cudaFree(n_samples); 
-            cudaFree(rays_o); cudaFree(rays_d); cudaFree(i_starts); cudaFree(i_ends); cudaFree(gpuc2w);
-            free(res_ptr); cudaFree(data);
-        }
         if (flags[3]){
-            cudaFree(gpuK); cudaFree(gpuxyzmin); cudaFree(gpuxyzmax); 
+            args.destory();
+            free(res_ptr); cudaFree(gpuc2w);
         }
     }
     void load_data(
@@ -890,9 +964,9 @@ public:
     {
         flags[0] = true;
         cudaMalloc(&dendata, N*sizeof(float));
-        cudaMalloc(&coldata, N*Dcol*sizeof(float));
+        cudaMalloc(&coldata, N*mlp.Dcol*sizeof(float));
         cudaMemcpy(dendata, ddata, N*sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(coldata, cdata, N*Dcol*sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(coldata, cdata, N*mlp.Dcol*sizeof(float), cudaMemcpyHostToDevice);
         openvdb::io::File file(vdbdir);
         file.open();
         OpenFloatGrid::Ptr grid;
@@ -912,37 +986,13 @@ public:
         float* w1, float* b1, 
         float* w2, float* b2){
         flags[1] = true;
-        cudaMemcpy(this->w0, w0, Din * Dhid * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(this->w1, w1, Dhid * Dhid * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(this->w2, w2, Dhid * Dout * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(this->b0, b0, Dhid * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(this->b1, b1, Dhid * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(this->b2, b2, Dout * sizeof(float), cudaMemcpyHostToDevice);
+        mlp.load(w0, w1, w2, b0, b1, b2);
     }
-    void setHW(int h, int w){
+    void setScene(std::vector<int> reso, float* K, float* xyz_min, float* xyz_max){
         flags[2] = true;
-        H = h; W = w;
-        int HW = H * W;
-        cudaMalloc(&steplens, HW * sizeof(float));
-        cudaMalloc(&pefeat, HW * Dpe * sizeof(float));
-        cudaMalloc(&tmins, HW * sizeof(float));
-        cudaMalloc(&tmaxs, HW * sizeof(float));
-        cudaMalloc(&n_samples, HW * sizeof(int));
-        cudaMalloc(&rays_o, 3 * sizeof(float));
-        cudaMalloc(&rays_d, HW * 3 * sizeof(float));
-        cudaMalloc(&i_starts, HW * sizeof(int));
-        cudaMalloc(&i_ends, HW * sizeof(int));
-        res_ptr = (float*)malloc(HW*3*sizeof(float)); 
-        cudaMalloc(&data, HW*3*sizeof(float));
-        cudaMalloc(&gpuc2w, 16 * sizeof(float)); 
+        scene.load(reso.data(), K, xyz_min, xyz_max);
     }
-    void setSceneInfo(float* K, float* xyz_min, float* xyz_max){
-        flags[3] = true;
-        cudaMalloc(&gpuK, 9 * sizeof(float)); cudaMemcpy(gpuK, K, 9 * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMalloc(&gpuxyzmin, 3 * sizeof(float)); cudaMemcpy(gpuxyzmin, xyz_min, 3 * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMalloc(&gpuxyzmax, 3 * sizeof(float)); cudaMemcpy(gpuxyzmax, xyz_max, 3 * sizeof(float), cudaMemcpyHostToDevice);
-    }
-    void setOptions(
+    void setKwargs(
         float near, 
         float far, 
         float stepdist, 
@@ -950,67 +1000,70 @@ public:
         float interval, 
         float fast_color_thres, 
         float bg,
-        bool inverse_y)
+        bool inverse_y,
+        int h, int w)
         {
-            flags[4] = true;
-            this->near = near; this->far = far; this->stepdist = stepdist; this->act_shift = act_shift;
-            this->interval = interval; this->fast_color_thres = fast_color_thres; this->bg = bg;
-            this->inverse_y = inverse_y;
+            flags[3] = true;
+            args.near = near; 
+            args.far = 1e9;
+            args.stepdist = stepdist; 
+            args.act_shift = act_shift;
+            args.interval = interval; 
+            args.fast_color_thres = fast_color_thres; 
+            args.bg = bg;
+            args.inverse_y = inverse_y;
+            args.H = h; args.W = w;
+
+            args.create(h*w, mlp.Dpe);
+            cudaMalloc(&gpuc2w, 16 * sizeof(float)); 
+            res_ptr = (float*)malloc(args.HW*3*sizeof(float)); 
         }
-    // render an image ...
+    
     void input_a_c2w(float* c2w){
-        flags[5] = true;
+        flags[4] = true;
         cudaMemcpy(gpuc2w, c2w, 16 * sizeof(float), cudaMemcpyHostToDevice);
     }
+
     void render_an_image()
     {
-        if (flags[0] && flags[1] && flags[2] && flags[3] && flags[4] && flags[5]){
+        if (flags[0] && flags[1] && flags[2] && flags[3] && flags[4]){
             clock_t t1 = clock();
             render_an_image_cuda(
-                data, H, W, 
-                gpuc2w, gpuK,
-                inverse_y,
-                steplens, pefeat, tmins, tmaxs, n_samples,
-                rays_o, rays_d, i_starts, i_ends,
-                near, 1e9, gpuxyzmin, gpuxyzmax, stepdist, 
-                gpureso, act_shift, interval, fast_color_thres, Dcol, 
-                w0, b0, w1, b1, w2, b2, Dhid, bg,
-                idxGrid, dendata, coldata, cuHandle);
+                args, mlp, scene, gpuc2w, 
+                idxGrid, dendata, coldata);
             clock_t t2 = clock();
             timer += (t2-t1)/double(CLOCKS_PER_SEC);
         }
     }
     py::array_t<float> output_an_image(){
-        const int ResBytes = H * W * 3 * sizeof(float);
-        cudaMemcpy(res_ptr, data, ResBytes, cudaMemcpyDeviceToHost);
-        py::array_t<float> res(H * W * 3);
-        memcpy(res.mutable_data(), res_ptr, ResBytes);
-        return res;
+        if (flags[0] && flags[1] && flags[2] && flags[3] && flags[4]){
+            const int ResBytes = args.HW * 3 * sizeof(float);
+            cudaMemcpy(res_ptr, args.data, ResBytes, cudaMemcpyDeviceToHost);
+            py::array_t<float> res(args.HW * 3);
+            memcpy(res.mutable_data(), res_ptr, ResBytes);
+            return res;
+        }
     }
     void resetTimer(){timer = 0;}
     float getTimer(){return timer;}
 
 private:
-    int H;
-    int W;
+    RenderKwargs args;
+    MLP mlp;
+    SceneInfo scene;
     float* gpuc2w;
-    bool flags[6]; //load_data, load_param, setHW, setSceneInfo, setOptions, inputc2w
+    bool flags[5];  // load_data, load_param, setSceneInfo, setKwargs, inputc2w
+
     // For Core Data
-    int Dcol;
     float* dendata;
     float* coldata;
-    NanoFloatGrid* idxGrid; // index
-    // For Scene Information
-    float* gpuK; float* gpuxyzmin; float* gpuxyzmax; int* gpureso;
-    // For Rendering Options
-    float near; float far; float stepdist; float act_shift; float interval; float fast_color_thres; float bg; bool inverse_y;
-    // For RGBNet
-    int Din, Dhid, Dout, Dpe;
-    float *w0, *b0, *w1, *b1, *w2, *b2;
+    NanoFloatGrid* idxGrid;  // Merged Index VDB  
+    
     // For extra tools
     float timer;
-    cublasHandle_t cuHandle;
     HandleT handle;
-    float* data; float* res_ptr; 
-    int* i_starts; int* i_ends; float* tmins; float* tmaxs; float* steplens; float* pefeat; int* n_samples; float* rays_o; float* rays_d; 
+    float* res_ptr;
+    
+    
 };// MGRenderer
+

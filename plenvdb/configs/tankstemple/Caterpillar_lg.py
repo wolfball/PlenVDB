@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_Caterpillar_lg'
+expname = 'vdb_Caterpillar_lg'
 basedir = './logs/tanks_and_temple'
 
 data = dict(

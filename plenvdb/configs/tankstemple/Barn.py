@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_Barn'
+expname = 'vdb_Barn'
 basedir = './logs/tanks_and_temple'
 
 data = dict(

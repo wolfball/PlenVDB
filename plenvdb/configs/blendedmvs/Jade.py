@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_Jade'
+expname = 'vdb_Jade'
 basedir = './logs/blended_mvs'
 
 data = dict(

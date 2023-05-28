@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_Steamtrain'
+expname = 'vdb_Steamtrain'
 basedir = './logs/nsvf_synthetic'
 
 data = dict(

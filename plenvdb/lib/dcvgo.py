@@ -380,6 +380,22 @@ class DirectContractedVoxGO(nn.Module):
             ret_dict.update({'depth': depth})
 
         return ret_dict
+    
+    def load_from(self, loaddir):
+        self.density.load_from(loaddir)
+        self.k0.load_from(loaddir)
+    
+    def save_to(self, savedir):
+        self.density.save_to(savedir)
+        self.k0.save_to(savedir)
+
+    def resetTimer(self):
+        self.density.resetTimer()
+        self.k0.resetTimer()
+    
+    def getTimer(self):
+        self.density.getTimer()
+        self.k0.getTimer()
 
 
 class DistortionLoss(torch.autograd.Function):

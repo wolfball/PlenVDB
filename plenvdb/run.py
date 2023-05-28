@@ -5,7 +5,7 @@ from imageio.core.util import BaseProgressIndicator
 from tqdm import tqdm, trange
 
 sys.path.append("./lib/vdb/build/")
-from plenvdb import Renderer, MGRenderer
+from plenvdb import MGRenderer
 
 import os
 import mmcv
@@ -29,10 +29,10 @@ def config_parser():
     parser.add_argument('--config', required=True,
                         help='config file path')
     parser.add_argument('--gpu', type=int, default=0)
+    parser.add_argument('--use_mergedvdb', action='store_true',
+                        help="whether to use merged VDB to accelerate rendering")
     parser.add_argument("--seed", type=int, default=777,
                         help='Random seed')
-    parser.add_argument("--cps", action='store_true',
-                        help="use compressed VDB")
     parser.add_argument("--no_reload", action='store_true',
                         help='do not reload weights from saved ckpt')
     parser.add_argument("--no_reload_optimizer", action='store_true',
@@ -66,11 +66,74 @@ def config_parser():
     return parser
 
 
+
+def create_renderer(model, basepath, K, HW, render_kwargs):
+    ''' 
+    @model: get mlp and args from model
+    @basepath: get VDB from basepath
+    @K: assume only one camera is used while rendering
+    '''
+
+    # create renderer
+    renderer = MGRenderer(
+        model.rgbnet_kwargs['rgbnet_dim'],            # dim_col
+        3*(1+2*model.rgbnet_kwargs['viewbase_pe']),   # dim_pe
+        model.rgbnet_kwargs['rgbnet_width'],          # dim_hid
+        3,                                            # dim_out
+    )
+
+    # load Merged VDB
+    vdbdata = np.load(os.path.join(basepath, "mergeddata.npz"))
+    denvdb = torch.tensor(vdbdata['den']).float().detach().cpu().numpy()
+    colvdb = torch.tensor(vdbdata['col']).float().detach().cpu().numpy()
+    N = denvdb.shape[0]
+    renderer.load_data(
+        denvdb.reshape(-1),   # density data
+        colvdb.reshape(-1),   #   color data
+        os.path.join(basepath, "mergedidxs.vdb"), # merged index VDB
+        N # num of active data 
+    )
+
+    # load mlp
+    w0 = model.rgbnet[0].weight.t().contiguous().detach().cpu().numpy()
+    b0 = model.rgbnet[0].bias.detach().cpu().numpy()
+    w1 = model.rgbnet[2][0].weight.t().contiguous().detach().cpu().numpy()
+    b1 = model.rgbnet[2][0].bias.detach().cpu().numpy()
+    w2 = model.rgbnet[3].weight.t().contiguous().detach().cpu().numpy()
+    b2 = model.rgbnet[3].bias.detach().cpu().numpy()
+    renderer.load_params(w0.reshape(-1), b0, w1.reshape(-1), b1, w2.reshape(-1), b2)
+
+    # load scene info
+    renderer.setScene(
+        model.density.world_size.tolist(),      # reso
+        torch.tensor(K).float().detach().cpu().numpy().reshape(-1), # K (assume use only one camera)
+        model.xyz_min.detach().cpu().numpy(),   # xyz_min of bbox
+        model.xyz_max.detach().cpu().numpy()    # xyz_max of bbox
+    )
+
+    # load render args
+    renderer.setKwargs(
+        render_kwargs['near'],   # near
+        render_kwargs['far'],    # far
+        render_kwargs['stepsize'] * model.voxel_size.item(),   # step_dist
+        model.act_shift.item(),  # act_shift
+        render_kwargs['stepsize'] * model.voxel_size_ratio.item(),  # interval
+        model.fast_color_thres,  # fast_color_thres
+        render_kwargs['bg'],     # bg 
+        render_kwargs['inverse_y'],  # inverse_y
+        HW[0], HW[1] # H, W
+    )
+    
+    return renderer
+    
+
+
 @torch.no_grad()
 def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
                       gt_imgs=None, savedir=None, dump_images=False,
                       render_factor=0, render_video_flipy=False, render_video_rot90=0,
-                      eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False, basepath=None, cps=False, grid_type="VDBGrid"):
+                      eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False, basepath=None, 
+                      grid_type="VDBGrid", use_mergedvdb=True):
     '''Render images for the given viewpoints; run evaluation if gt given.
     '''
     assert len(render_poses) == len(HW) and len(HW) == len(Ks)
@@ -90,45 +153,22 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     lpips_vgg = []
 
     # load parameters
-    if grid_type == "VDBGrid":
-        w0 = model.rgbnet[0].weight.t().contiguous().detach().cpu().numpy()
-        b0 = model.rgbnet[0].bias.detach().cpu().numpy()
-        w1 = model.rgbnet[2][0].weight.t().contiguous().detach().cpu().numpy()
-        b1 = model.rgbnet[2][0].bias.detach().cpu().numpy()
-        w2 = model.rgbnet[3].weight.t().contiguous().detach().cpu().numpy()
-        b2 = model.rgbnet[3].bias.detach().cpu().numpy()
-        if not cps:
-            renderer = Renderer(model.density.grid, model.k0.grid, w0.shape[0], w0.shape[1], 3)
-            renderer.load_maskvdb(os.path.join(basepath, 'finemask.vdb'))
-        else:
-            renderer = MGRenderer(w0.shape[0], w0.shape[1], 3, model.density.world_size.tolist(), 12)
-            vdbdata = np.load(os.path.join(basepath, "mergeddata.npz"))
-            denvdb = torch.tensor(vdbdata['den']).float().detach().cpu().numpy()
-            colvdb = torch.tensor(vdbdata['col']).float().detach().cpu().numpy()
-            N = denvdb.shape[0]
-            renderer.load_data(denvdb.reshape(-1), colvdb.reshape(-1), os.path.join(basepath, "mergedidxs.vdb"), N)
-        renderer.load_params(w0.reshape(-1), b0, w1.reshape(-1), b1, w2.reshape(-1), b2)
-        renderer.setHW(HW[0][0], HW[0][1])
-
-        renderer.setSceneInfo(
-            torch.tensor(Ks[0][:3,:3]).float().detach().cpu().numpy().reshape(-1), model.xyz_min.detach().cpu().numpy(), model.xyz_max.detach().cpu().numpy())
-        renderer.setOptions(
-            render_kwargs['near'], render_kwargs['far'], render_kwargs['stepsize'] * model.voxel_size.item(),
-                model.act_shift.item(), render_kwargs['stepsize'] * model.voxel_size_ratio.item(), model.fast_color_thres, render_kwargs['bg'], render_kwargs['inverse_y'])
+    if grid_type == "VDBGrid" and use_mergedvdb:
+        renderer = create_renderer(model, basepath, Ks[0][:3,:3], HW[0], render_kwargs)
         renderer.resetTimer()
     rdtime = 0
     for i, c2w in enumerate(tqdm(render_poses)):
         H, W = HW[i]
         K = Ks[i]
         c2w = torch.Tensor(c2w)
-        if grid_type == "VDBGrid":
+        if grid_type == "VDBGrid" and use_mergedvdb:
             renderer.input_a_c2w(c2w.detach().cpu().numpy().reshape(-1))
             t0 = time.time()
             renderer.render_an_image()
             rdtime += time.time()-t0
             rd_img = renderer.output_an_image()
             rgb = rd_img.reshape(H, W, 3)
-        elif grid_type == "DenseGrid":
+        else:
             t0 = time.time()
             rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(
                     H, W, K, c2w, ndc, inverse_y=render_kwargs['inverse_y'],
@@ -147,8 +187,6 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
                 for k in render_result_chunks[0].keys()
             }
             rgb = render_result['rgb_marched'].cpu().numpy()
-        else:
-            raise NotImplementedError
         
         rgbs.append(rgb)
         if i==0:
@@ -187,7 +225,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
             rgb8 = utils.to8b(rgbs[i])
             filename = os.path.join(savedir, '{:03d}.png'.format(i))
             imageio.imwrite(filename, rgb8)
-    if grid_type == "VDBGrid":
+    if grid_type == "VDBGrid" and use_mergedvdb:
         print("Rendering Time: ", renderer.getTimer(), " FPS = ", len(render_poses)/renderer.getTimer())
     else:
         print("Rendering Time: ", rdtime, " FPS = ", len(render_poses)/rdtime)
@@ -737,14 +775,15 @@ if __name__=='__main__':
         os.makedirs(testsavedir, exist_ok=True)
         print('All results are dumped into', testsavedir)
         rgbs = render_viewpoints(
-                basepath=os.path.join(cfg.basedir, cfg.expname),
-                render_poses=data_dict['poses'][data_dict['i_train']],
-                HW=data_dict['HW'][data_dict['i_train']],
-                Ks=data_dict['Ks'][data_dict['i_train']],
-                gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_train']],
-                savedir=testsavedir, dump_images=args.dump_images,
-                eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
-                **render_viewpoints_kwargs)
+            use_mergedvdb=args.use_mergedvdb,
+            basepath=os.path.join(cfg.basedir, cfg.expname), grid_type=cfg.fine_model_and_render.density_type,
+            render_poses=data_dict['poses'][data_dict['i_train']],
+            HW=data_dict['HW'][data_dict['i_train']],
+            Ks=data_dict['Ks'][data_dict['i_train']],
+            gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_train']],
+            savedir=testsavedir, dump_images=args.dump_images,
+            eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
+            **render_viewpoints_kwargs)
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
         # imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
 
@@ -754,15 +793,16 @@ if __name__=='__main__':
         os.makedirs(testsavedir, exist_ok=True)
         print('All results are dumped into', testsavedir)
         rgbs = render_viewpoints(
-                cps=args.cps, grid_type=cfg.fine_model_and_render.density_type,
-                basepath=os.path.join(cfg.basedir, cfg.expname),
-                render_poses=data_dict['poses'][data_dict['i_test']],
-                HW=data_dict['HW'][data_dict['i_test']],
-                Ks=data_dict['Ks'][data_dict['i_test']],
-                gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_test']],
-                savedir=testsavedir, dump_images=args.dump_images,
-                eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
-                **render_viewpoints_kwargs)
+            use_mergedvdb=args.use_mergedvdb,
+            grid_type=cfg.fine_model_and_render.density_type,
+            basepath=os.path.join(cfg.basedir, cfg.expname),
+            render_poses=data_dict['poses'][data_dict['i_test']],
+            HW=data_dict['HW'][data_dict['i_test']],
+            Ks=data_dict['Ks'][data_dict['i_test']],
+            gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_test']],
+            savedir=testsavedir, dump_images=args.dump_images,
+            eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
+            **render_viewpoints_kwargs)
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
         # imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
 
@@ -772,15 +812,16 @@ if __name__=='__main__':
         os.makedirs(testsavedir, exist_ok=True)
         print('All results are dumped into', testsavedir)
         rgbs = render_viewpoints(
-                basepath=os.path.join(cfg.basedir, cfg.expname),
-                render_poses=data_dict['render_poses'],
-                HW=data_dict['HW'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
-                Ks=data_dict['Ks'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
-                render_factor=args.render_video_factor,
-                render_video_flipy=args.render_video_flipy,
-                render_video_rot90=args.render_video_rot90,
-                savedir=testsavedir, dump_images=args.dump_images,
-                **render_viewpoints_kwargs)
+            use_mergedvdb=args.use_mergedvdb,
+            basepath=os.path.join(cfg.basedir, cfg.expname), grid_type=cfg.fine_model_and_render.density_type,
+            render_poses=data_dict['render_poses'],
+            HW=data_dict['HW'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
+            Ks=data_dict['Ks'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
+            render_factor=args.render_video_factor,
+            render_video_flipy=args.render_video_flipy,
+            render_video_rot90=args.render_video_rot90,
+            savedir=testsavedir, dump_images=args.dump_images,
+            **render_viewpoints_kwargs)
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
         # import matplotlib.pyplot as plt
         # depths_vis = depths * (1-bgmaps) + bgmaps

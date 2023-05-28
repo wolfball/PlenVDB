@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_Toad'
+expname = 'vdb_Toad'
 basedir = './logs/nsvf_synthetic'
 
 data = dict(

@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_donut_369_40208_78816'
+expname = 'vdb_donut_369_40208_78816'
 basedir = './logs/co3d'
 
 data = dict(

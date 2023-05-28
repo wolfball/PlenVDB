@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_Fountain'
+expname = 'vdb_Fountain'
 basedir = './logs/blended_mvs'
 
 data = dict(

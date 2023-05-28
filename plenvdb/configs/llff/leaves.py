@@ -1,6 +1,6 @@
 _base_ = './llff_default.py'
 
-expname = 'leaves'
+expname = 'vdb_leaves'
 
 data = dict(
     datadir='./data/nerf_llff_data/leaves',

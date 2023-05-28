@@ -1,6 +1,6 @@
 _base_ = './nerf_unbounded_default.py'
 
-expname = 'dvgo_bonsai_unbounded'
+expname = 'vdb_bonsai_unbounded'
 
 data = dict(
     datadir='./data/360_v2/bonsai',

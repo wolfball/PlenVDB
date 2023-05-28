@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_Lifestyle'
+expname = 'vdb_Lifestyle'
 basedir = './logs/nsvf_synthetic'
 
 data = dict(

@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_Spaceship'
+expname = 'vdb_Spaceship'
 basedir = './logs/nsvf_synthetic'
 
 data = dict(

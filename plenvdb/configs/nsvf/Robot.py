@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_Robot'
+expname = 'vdb_Robot'
 basedir = './logs/nsvf_synthetic'
 
 data = dict(

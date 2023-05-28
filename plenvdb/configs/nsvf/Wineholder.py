@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_Wineholder'
+expname = 'vdb_Wineholder'
 basedir = './logs/nsvf_synthetic'
 
 data = dict(

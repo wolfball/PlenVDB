@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_Statues'
+expname = 'vdb_Statues'
 basedir = './logs/blended_mvs'
 
 data = dict(

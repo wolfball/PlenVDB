@@ -1,68 +1,5 @@
 #include "plenvdb.cuh"
 
-__global__ void prepare_accs_kernel(
-    FloatGridT* densityGrid,
-    Vec3fGridT** colorGrids,
-    FloatGridT* maskGrid,
-    FloatAccT* densityAccs,
-    Vec3fAccT* colorAccs,
-    FloatAccT* maskAccs,
-    int HW,
-    int nVec)
-{
-    const int n = blockDim.x * blockIdx.x + threadIdx.x;
-    if (n < HW){
-        densityAccs[n] = densityGrid->getAccessor();
-        maskAccs[n] = maskGrid->getAccessor();
-        for (int d=0; d<nVec; d++)
-            colorAccs[n*nVec+d] = colorGrids[d]->getAccessor();
-    }
-}
-
-void prepare_accs(
-    FloatGridT* densityGrid,
-    Vec3fGridT** colorGrids,
-    FloatGridT* maskGrid,
-    FloatAccT* densityAccs,
-    Vec3fAccT* colorAccs,
-    FloatAccT* maskAccs,
-    int HW,
-    int nVec)
-{
-    prepare_accs_kernel<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(
-        densityGrid, colorGrids, maskGrid, densityAccs, colorAccs, maskAccs, HW, nVec);
-    cudaDeviceSynchronize();
-}
-
-
-__global__ void prepare_accs_kernel(
-    FloatGridT* densityGrid,
-    Vec3fGridT** colorGrids,
-    FloatAccT* densityAccs,
-    Vec3fAccT* colorAccs,
-    int HW,
-    int nVec)
-{
-    const int n = blockDim.x * blockIdx.x + threadIdx.x;
-    if (n < HW){
-        densityAccs[n] = densityGrid->getAccessor();
-        for (int d=0; d<nVec; d++)
-            colorAccs[n*nVec+d] = colorGrids[d]->getAccessor();
-    }
-}
-
-void prepare_accs(
-    FloatGridT* densityGrid,
-    Vec3fGridT** colorGrids,
-    FloatAccT* densityAccs,
-    Vec3fAccT* colorAccs,
-    int HW,
-    int nVec)
-{
-    prepare_accs_kernel<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(densityGrid, colorGrids, densityAccs, colorAccs, HW, nVec);
-    cudaDeviceSynchronize();
-}
-
 __device__ float trigetDenValue(
     FloatAccT& acc,
     const Vec3fT& xyz,
@@ -142,17 +79,25 @@ __global__ void cuda_plus_pe(float* dst, float* pesrc, int* rays_id, int N, int 
     }
 }
 
-// @out[N,dim_out] @inp[N,dim_inp=nVec*3] @peinp[Npe=HW,dim_pe=27]
-void cuda_rgbnet(float* out, float* inp, float* peinp, float* w0, float* b0, float* w1, float* b1, float* w2, float* b2, 
-    int N, int Npe, int dim_inp, int dim_pe, int dim_hid, int dim_out, cublasHandle_t cuHandle, int* rays_id)
+// @out[N,dim_out] @inp[N,dim_in=nVec*3] @peinp[Npe=HW,dim_pe=27]
+void cuda_rgbnet(float* out, float* inp, float* peinp, MLP& mlp, 
+    int N, int Npe, int* rays_id)
 {
+    int dim_in  = mlp.Dcol;
+    int dim_hid = mlp.Dhid;
+    int dim_out = mlp.Dout;
+    int dim_pe  = mlp.Dpe;
+    float* w0 = mlp.w0; float* w1 = mlp.w1; float* w2 = mlp.w2;
+    float* b0 = mlp.b0; float* b1 = mlp.b1; float* b2 = mlp.b2;
+    cublasHandle_t cuHandle = mlp.cuHandle;
+    
     cudaMemset(out, 0, N * dim_out * sizeof(float));
     float* tmp0; cudaMalloc(&tmp0, N * dim_hid * sizeof(float)); cudaMemset(tmp0, 0, N * dim_hid * sizeof(float));
     float* tmpPE; cudaMalloc(&tmpPE, Npe * dim_hid * sizeof(float)); cudaMemset(tmpPE, 0, Npe * dim_hid * sizeof(float));
     float* tmp1; cudaMalloc(&tmp1, N * dim_hid * sizeof(float)); cudaMemset(tmp1, 0, N * dim_hid * sizeof(float));
     float aa=1; float bb=0;
-    cublasSgemm(cuHandle, CUBLAS_OP_N, CUBLAS_OP_N, dim_hid, N, dim_inp, &aa, w0, dim_hid, inp, dim_inp, &bb, tmp0, dim_hid);
-    cublasSgemm(cuHandle, CUBLAS_OP_N, CUBLAS_OP_N, dim_hid, Npe, dim_pe, &aa, w0+dim_inp*dim_hid, dim_hid, peinp, dim_pe, &bb, tmpPE, dim_hid);
+    cublasSgemm(cuHandle, CUBLAS_OP_N, CUBLAS_OP_N, dim_hid, N, dim_in, &aa, w0, dim_hid, inp, dim_in, &bb, tmp0, dim_hid);
+    cublasSgemm(cuHandle, CUBLAS_OP_N, CUBLAS_OP_N, dim_hid, Npe, dim_pe, &aa, w0+dim_in*dim_hid, dim_hid, peinp, dim_pe, &bb, tmpPE, dim_hid);
     cuda_plus_pe<<<GET_BLOCK_NUM(dim_hid * N, BLOCKDIM), BLOCKDIM>>>(tmp0, tmpPE, rays_id, N, dim_hid);
     cuda_plus<<<GET_BLOCK_NUM(dim_hid * N, BLOCKDIM), BLOCKDIM>>>(tmp0, b0, dim_hid, true, N);
     cublasSgemm(cuHandle, CUBLAS_OP_N, CUBLAS_OP_N, dim_hid, N, dim_hid, &aa, w1, dim_hid, tmp0, dim_hid, &bb, tmp1, dim_hid);
@@ -174,165 +119,53 @@ __global__ void final_render(int N, int* rays_id, float* weights, float* raw_rgb
 }
 
 
-__device__ void get_rays(int n, const int H, const int W, float* K, float* c2w, float* rays_o, float* rays_d,
-    float* steplens, const float stepdist, float* xyz_max, float* xyz_min, float* pefeat, float* tmins, float* tmaxs,
-    const float near, const float far, bool inverse_y=false){
-        if (n == 0){
-            rays_o[0] = (c2w[3 ] - xyz_min[0])/(xyz_max[0]-xyz_min[0]);
-            rays_o[1] = (c2w[7 ] - xyz_min[1])/(xyz_max[1]-xyz_min[1]);
-            rays_o[2] = (c2w[11] - xyz_min[2])/(xyz_max[2]-xyz_min[2]);
-        }
-        
-        float pixeli = n % W + 0.5;
-        float pixelj = n / W + 0.5;
-        Vec3fT dir(0);
-        if (inverse_y)
-            dir = Vec3fT((pixeli - K[2])/K[0], (pixelj - K[5])/K[4], 1);
-        else
-            dir = Vec3fT((pixeli - K[2])/K[0], -(pixelj - K[5])/K[4], -1);
-        Vec3fT ray_d(dir[0]*c2w[0] + dir[1]*c2w[1] + dir[2]*c2w[2],
-                     dir[0]*c2w[4] + dir[1]*c2w[5] + dir[2]*c2w[6],
-                     dir[0]*c2w[8] + dir[1]*c2w[9] + dir[2]*c2w[10]);
-        steplens[n] = stepdist / ray_d.length();
-        int nx3 = n*3;
-        rays_d[nx3  ] = ray_d[0]/(xyz_max[0]-xyz_min[0]); 
-        rays_d[nx3+1] = ray_d[1]/(xyz_max[1]-xyz_min[1]); 
-        rays_d[nx3+2] = ray_d[2]/(xyz_max[2]-xyz_min[2]); 
-        Vec3fT viewdir = ray_d.normalize();
-        
-        get_tminmax(&tmins[n], &tmaxs[n], &rays_d[nx3], rays_o, near, far);
-        //init pefeat
-        float* pefeat_offset = pefeat + n * 27;
-        pefeat_offset[0] = viewdir[0]; 
-        pefeat_offset[1] = viewdir[1]; 
-        pefeat_offset[2] = viewdir[2];
-        int pebase = 1;
-        for (int i_=3; i_<7; i_++){
-            pefeat_offset[i_   ] = sin(viewdir[0]*pebase); 
-            pefeat_offset[i_+4 ] = sin(viewdir[1]*pebase); 
-            pefeat_offset[i_+8 ] = sin(viewdir[2]*pebase);
-            pefeat_offset[i_+12] = cos(viewdir[0]*pebase); 
-            pefeat_offset[i_+16] = cos(viewdir[1]*pebase); 
-            pefeat_offset[i_+20] = cos(viewdir[2]*pebase);
-            pebase *= 2;
-        }
-}
-
-
-// find n_samples
-__global__ void first_look(const int H, const int W, float* rays_o, float* rays_d,
-    int* n_samples, float* steplens, const int nVec, float* tmins, float* tmaxs,
-    int* reso, const float fast_color_thres, const float interval, const float act_shift, 
-    FloatAccT* maskAccs, FloatAccT* densityAccs, int* Nsum, float* K, float* c2w, 
-    float* xyz_max, float* xyz_min, float* pefeat, const float near, const float far, const float stepdist)
+__device__ void get_rays(
+    int n, 
+    float* c2w, 
+    RenderKwargs* args, 
+    SceneInfo* scene)
 {
-    int n = blockDim.x * blockIdx.x + threadIdx.x;
-    if (n < H * W){
-        int nx3 = n * 3;
-        // int data_dim = nVec * 3 + 1;
-        get_rays(n, H, W, K, c2w, rays_o, rays_d, steplens, stepdist, xyz_max, xyz_min, pefeat, tmins, tmaxs, near, far);
-
-        // first try ray marching
-        n_samples[n] = 0;
-        Vec3fT wldsize = Vec3fT(reso[0]-1, reso[1]-1, reso[2]-1);
-        Vec3fT ray_o(rays_o[0], rays_o[1], rays_o[2]);
-        Vec3fT ray_d(rays_d[nx3], rays_d[nx3+1], rays_d[nx3+2]);
-        // if (n == 197721) printf("rayso=(%f,%f,%f), raysd=(%f,%f,%f)\n", ray_o[0], ray_o[1], ray_o[2], ray_d[0], ray_d[1], ray_d[2]);
-        // begin to ray trace
-        float T_cum = 1.0f;
-        float weight = 0.0f;
-        float t = tmins[n];
-        bool update_tmin = false;
-        float scales[8];
-        // atomicAdd(ototal, int(max(1.0, ceil((tmaxs[n]-tmins[n])/steplens[n]))));
-        //ototal[n] += int(max(1.0, ceil((tmaxs[n]-tmins[n])/steplens[n])));
-        while (t<tmaxs[n]){
-            t += steplens[n];
-            Vec3fT ray_pts = ray_o + t * ray_d;
-            // total[n]++;
-            // out of bbox
-            if ((0>ray_pts[0]) | (0>ray_pts[1]) | (0>ray_pts[2]) | 
-                (1<ray_pts[0]) | (1<ray_pts[1]) | (1<ray_pts[2])) continue;
-            // get value of density
-            Vec3fT xyz = ray_pts * wldsize;
-            if (maskAccs!=nullptr && !maskAccs[n].isActive(nanovdb::Round<CoordT>(xyz))) continue;
-            float v_den = trigetDenValue(densityAccs[n], xyz, scales);
-            // raw2alpha and use threshold
-            float alpha = 1 - pow(1 + exp(v_den + act_shift), -interval);
-            if (alpha <= fast_color_thres) continue;
-            // alpha2weight and use threshold
-            weight = T_cum * alpha;
-            T_cum *= (1 - alpha);
-            if (weight <= fast_color_thres) continue;
-            // atomicAdd(wout, 1);
-            n_samples[n]++;
-            // if (n == 197721)
-            //     printf("n=%d, den=%f, pts=(%f,%f,%f), weight=%f\n", n_samples[n], v_den, ray_pts[0], ray_pts[1], ray_pts[2], weight);
-            if (!update_tmin){tmins[n] = t - steplens[n]; update_tmin = true;}
-            if (T_cum < 1e-3) {tmaxs[n] = t; break;}
-        }
-        atomicAdd(Nsum, n_samples[n]);
+    if (n == 0){
+        args->rays_o[0] = (c2w[3 ] - scene->xyz_min[0])/(scene->xyz_max[0]-scene->xyz_min[0]);
+        args->rays_o[1] = (c2w[7 ] - scene->xyz_min[1])/(scene->xyz_max[1]-scene->xyz_min[1]);
+        args->rays_o[2] = (c2w[11] - scene->xyz_min[2])/(scene->xyz_max[2]-scene->xyz_min[2]);
+    }
+    
+    float pixeli = n % args->W + 0.5;
+    float pixelj = n / args->W + 0.5;
+    Vec3fT dir(0);
+    if (args->inverse_y)
+        dir = Vec3fT((pixeli - scene->K[2])/scene->K[0], (pixelj - scene->K[5])/scene->K[4], 1);
+    else
+        dir = Vec3fT((pixeli - scene->K[2])/scene->K[0], -(pixelj - scene->K[5])/scene->K[4], -1);
+    Vec3fT ray_d(dir[0]*c2w[0] + dir[1]*c2w[1] + dir[2]*c2w[2],
+                    dir[0]*c2w[4] + dir[1]*c2w[5] + dir[2]*c2w[6],
+                    dir[0]*c2w[8] + dir[1]*c2w[9] + dir[2]*c2w[10]);
+    args->steplens[n] = args->stepdist / ray_d.length();
+    int nx3 = n*3;
+    args->rays_d[nx3  ] = ray_d[0]/(scene->xyz_max[0]-scene->xyz_min[0]); 
+    args->rays_d[nx3+1] = ray_d[1]/(scene->xyz_max[1]-scene->xyz_min[1]); 
+    args->rays_d[nx3+2] = ray_d[2]/(scene->xyz_max[2]-scene->xyz_min[2]); 
+    Vec3fT viewdir = ray_d.normalize();
+    
+    get_tminmax(&(args->tmins[n]), &(args->tmaxs[n]), &(args->rays_d[nx3]), args->rays_o, args->near, args->far);
+    //init pefeat
+    float* pefeat_offset = args->pefeat + n * 27;
+    pefeat_offset[0] = viewdir[0]; 
+    pefeat_offset[1] = viewdir[1]; 
+    pefeat_offset[2] = viewdir[2];
+    int pebase = 1;
+    for (int i_=3; i_<7; i_++){
+        pefeat_offset[i_   ] = sin(viewdir[0]*pebase); 
+        pefeat_offset[i_+4 ] = sin(viewdir[1]*pebase); 
+        pefeat_offset[i_+8 ] = sin(viewdir[2]*pebase);
+        pefeat_offset[i_+12] = cos(viewdir[0]*pebase); 
+        pefeat_offset[i_+16] = cos(viewdir[1]*pebase); 
+        pefeat_offset[i_+20] = cos(viewdir[2]*pebase);
+        pebase *= 2;
     }
 }
 
-
-__global__ void ray_marching(
-    float* data, const int HW, int* n_samples, float* steplens, float* rays_o, float* rays_d, int* rays_id,
-    const int* reso, const float act_shift, const float interval, const float fast_color_thres,
-    const int nVec, float* rgbfeat, FloatAccT* densityAccs, Vec3fAccT* colorAccs, FloatAccT* maskAccs,
-    float* tmins, float* tmaxs, float* weights, int* i_starts, int* i_ends, const float bg)
-{
-    // default nVec = 4
-    const int n = blockDim.x * blockIdx.x + threadIdx.x;
-    if (n < HW){
-        if (n_samples[n] == 0) {data[n*3] = bg; data[n*3+1] = bg; data[n*3+2] = bg; return;}
-        // int data_dim = nVec*3+1;
-        Vec3fT wldsize(reso[0]-1, reso[1]-1, reso[2]-1);
-        Vec3fT ray_o(rays_o[0], rays_o[1], rays_o[2]);
-        Vec3fT ray_d(rays_d[n*3], rays_d[n*3+1], rays_d[n*3+2]);
-        // get ray
-        // begin to ray trace
-        float scales[8];
-        float T_cum = 1.0f;
-        float weight = 0.0f;
-        float t = tmins[n];
-        int r = i_starts[n];
-        while (t<tmaxs[n]){
-            t += steplens[n];
-            Vec3fT ray_pts = ray_o + t * ray_d;
-            // stotal[n]++;
-            // atomicAdd(stotal, 1);
-            // out of bbox
-            if ((0>ray_pts[0]) | (0>ray_pts[1]) | (0>ray_pts[2]) | 
-                (1<ray_pts[0]) | (1<ray_pts[1]) | (1<ray_pts[2])) {continue;}
-            // get value of density
-            Vec3fT xyz = ray_pts * wldsize;
-            if (maskAccs!=nullptr && !maskAccs[n].isActive(nanovdb::Round<CoordT>(xyz))){continue;}
-            float v_den = trigetDenValue(densityAccs[n], xyz, scales);
-            // raw2alpha and use threshold
-            float alpha = 1 - pow(1 + exp(v_den + act_shift), -interval);
-            if (alpha <= fast_color_thres) continue;
-            // alpha2weight and use threshold
-            weight = T_cum * alpha;
-            T_cum *= (1 - alpha);
-            
-            if (weight <= fast_color_thres) continue;
-            for (int i_=0; i_<4; i_++){
-                //@ k0: [H*W, nVec*3]
-                Vec3fT v_col = trigetColValue(colorAccs[n*nVec+i_], xyz, scales);
-                rgbfeat[r*3*nVec+i_*3] = v_col[0]; rgbfeat[r*3*nVec+i_*3+1] = v_col[1]; rgbfeat[r*3*nVec+i_*3+2] = v_col[2];
-            }
-            // if (n == 200412){
-            //     printf("r=%d, xyz=%f,%f,%f, v_den=%f, weight=%f\n", r, xyz[0],xyz[1],xyz[2], v_den, weight);
-            // }
-            weights[r++] = weight;
-            // if (T_cum < 1e-3) break;
-        }
-        if (r != i_ends[n]) printf("WRONG: RAY [%d] END WITH [%d] RATHER THAN [%d]\n", n, r, i_ends[n]);
-        float last_rgb = T_cum * bg;
-        data[n*3] = last_rgb; data[n*3+1] = last_rgb; data[n*3+2] = last_rgb;
-    }
-}
 
 
 __global__ void set_rays_id(int* i_starts, int* i_ends, int* rays_id, int HW){
@@ -353,62 +186,6 @@ __global__ void init_rgbfeat(float* rgbfeat, float* pefeat, int nVec, int* rays_
     }
 
 }
-
-
-void render_an_image_cuda(
-    float* data, const int H, const int W, 
-    float* c2w, float* K,
-    float* steplens, float* pefeat, float* tmins, float* tmaxs, int* n_samples,
-    float* rays_o, float* rays_d, int* i_starts, int* i_ends,
-    const float near, const float far, float* xyz_min, float* xyz_max, const float stepdist, 
-    int* reso, const float act_shift, const float interval, const float fast_color_thres,
-    const int nVec, float* w0, float* b0, float* w1, float* b1, float* w2, float* b2, int rgbnet_width, float bg,
-    FloatAccT* densityAccs, Vec3fAccT* colorAccs, cublasHandle_t cuHandle, FloatAccT* maskAccs)
-{
-    // malloc space, default: self.rgbnet_full_implicit=False, self.rgbnet!=None, self.rgbnet_direct=True, viewbase_pe=4
-    int HW = H * W;
-    int* gpu_Nsum; cudaMalloc(&gpu_Nsum, sizeof(int)); cudaMemset(gpu_Nsum, 0, sizeof(int));
-
-    // stage1
-    // clock_t t1 = clock();
-    first_look<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(
-        H, W, rays_o, rays_d, n_samples, steplens, nVec, tmins, tmaxs,
-        reso, fast_color_thres, interval, act_shift, maskAccs, densityAccs, gpu_Nsum,
-        K, c2w, xyz_max, xyz_min, pefeat, near, far, stepdist);
-
-    int Nvalid = 0;
-    cudaMemcpy(&Nvalid, gpu_Nsum, sizeof(int), cudaMemcpyDeviceToHost);
-    int* rays_id; cudaMalloc(&rays_id, Nvalid * sizeof(int));
-
-    // stage2
-    thrust::exclusive_scan(thrust::device, n_samples, n_samples + HW, i_starts);
-    thrust::inclusive_scan(thrust::device, n_samples, n_samples + HW, i_ends);
-    set_rays_id<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(i_starts, i_ends, rays_id, HW);
-    
-    // stage3
-    float* rgbfeat; cudaMalloc(&rgbfeat, Nvalid * 3*nVec * sizeof(float));
-    float* weights; cudaMalloc(&weights, Nvalid * sizeof(float));
-
-    // stage4 !!!
-    // clock_t t3 = clock();
-    ray_marching<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(
-        data, HW, n_samples, steplens, rays_o, rays_d, rays_id,
-        reso, act_shift, interval, fast_color_thres, nVec,
-        rgbfeat, densityAccs, colorAccs, maskAccs, tmins, tmaxs, weights, i_starts, i_ends, bg);
-    // stage5 !!!
-    float* raw_rgbs; cudaMalloc(&raw_rgbs, Nvalid * 3 * sizeof(float));
-    cuda_rgbnet(raw_rgbs, rgbfeat, pefeat, w0, b0, w1, b1, w2, b2, Nvalid, HW, 3*nVec, 27, rgbnet_width, 3, cuHandle, rays_id);
-    // stage6
-    final_render<<<GET_BLOCK_NUM(Nvalid, BLOCKDIM), BLOCKDIM>>>(Nvalid, rays_id, weights, raw_rgbs, data);
-    cudaDeviceSynchronize();
-    gpuCheckKernelExecutionError( __FILE__, __LINE__);
-    cudaFree(rgbfeat); cudaFree(rays_id); 
-    cudaFree(raw_rgbs); cudaFree(weights);
-    cudaFree(gpu_Nsum);    
-}
-
-
-
 
 
 __device__ float trigetDensity(Vec3fT& xyz, float* dendata, FloatAccT &acc){
@@ -442,30 +219,31 @@ __device__ float trigetDensity(Vec3fT& xyz, float* dendata, FloatAccT &acc){
     return res;
 }
 
-__global__ void first_look_merged2(const int H, const int W, float* rays_o, float* rays_d,
-    int* n_samples, float* steplens, float* tmins, float* tmaxs, bool inverse_y,
-    int* reso, const float fast_color_thres, const float interval, const float act_shift, 
-    FloatGridT* grid, int* Nsum, float* K, float* c2w, 
-    float* xyz_max, float* xyz_min, float* pefeat, const float near, const float far, const float stepdist,
-    float* dendata)
+__global__ void first_look_merged(
+    NanoFloatGrid* grid, 
+    int* Nsum, 
+    float* c2w, 
+    float* dendata, 
+    RenderKwargs* args,
+    SceneInfo* scene)
 {
     int n = blockDim.x * blockIdx.x + threadIdx.x;
-    if (n < H * W){
+    if (n < args->HW){
         int nx3 = n * 3;
-        get_rays(n, H, W, K, c2w, rays_o, rays_d, steplens, stepdist, xyz_max, xyz_min, pefeat, tmins, tmaxs, near, far, inverse_y);
+        get_rays(n, c2w, args, scene);
         FloatAccT acc = grid->getAccessor();
         // first try ray marching
-        n_samples[n] = 0;
-        Vec3fT wldsize = Vec3fT(reso[0]-1, reso[1]-1, reso[2]-1);
-        Vec3fT ray_o(rays_o[0], rays_o[1], rays_o[2]);
-        Vec3fT ray_d(rays_d[nx3], rays_d[nx3+1], rays_d[nx3+2]);
+        args->n_samples[n] = 0;
+        Vec3fT wldsize = Vec3fT(scene->reso[0]-1, scene->reso[1]-1, scene->reso[2]-1);
+        Vec3fT ray_o(args->rays_o[0], args->rays_o[1], args->rays_o[2]);
+        Vec3fT ray_d(args->rays_d[nx3], args->rays_d[nx3+1], args->rays_d[nx3+2]);
         // begin to ray trace
         float T_cum = 1.0f;
         float weight = 0.0f;
-        float t = tmins[n];
+        float t = args->tmins[n];
         bool update_tmin = false;
-        while (t<tmaxs[n]){
-            t += steplens[n];
+        while (t<args->tmaxs[n]){
+            t += args->steplens[n];
             Vec3fT ray_pts = ray_o + t * ray_d;
             
             if ((0>ray_pts[0]) | (0>ray_pts[1]) | (0>ray_pts[2]) | 
@@ -475,17 +253,17 @@ __global__ void first_look_merged2(const int H, const int W, float* rays_o, floa
             if (!acc.isActive(nanovdb::Round<CoordT>(xyz))) continue;
             float v_den = trigetDensity(xyz, dendata, acc);//trigetValue<float, FloatAccT>(densityAccs[n], xyz);
             // raw2alpha and use threshold
-            float alpha = 1 - pow(1 + exp(v_den + act_shift), -interval);
-            if (alpha <= fast_color_thres) continue;
+            float alpha = 1 - pow(1 + exp(v_den + args->act_shift), -args->interval);
+            if (alpha <= args->fast_color_thres) continue;
             // alpha2weight and use threshold
             weight = T_cum * alpha;
             T_cum *= (1 - alpha);
-            if (weight <= fast_color_thres) continue;
-            n_samples[n]++;
-            if (!update_tmin){tmins[n] = t - steplens[n]; update_tmin = true;}
-            if (T_cum < 1e-3) {tmaxs[n] = t; break;}
+            if (weight <= args->fast_color_thres) continue;
+            args->n_samples[n]++;
+            if (!update_tmin){args->tmins[n] = t - args->steplens[n]; update_tmin = true;}
+            if (T_cum < 1e-3) {args->tmaxs[n] = t; break;}
         }
-        atomicAdd(Nsum, n_samples[n]);
+        atomicAdd(Nsum, args->n_samples[n]);
     }
 }
 
@@ -531,30 +309,38 @@ __device__ void trigetColor(float* coldata, float* scales, int* idxs, int datadi
     }
 }
 
-__global__ void ray_marching_merged2(
-    float* data, const int HW, int* n_samples, float* steplens, float* rays_o, float* rays_d, int* rays_id,
-    const int* reso, const float act_shift, const float interval, const float fast_color_thres,
-    const int data_dim, float* rgbfeat, FloatGridT* grid,
-    float* tmins, float* tmaxs, float* weights, int* i_starts, int* i_ends, const float bg,
-    float* dendata, float* coldata)
+__global__ void ray_marching_merged(
+    int* rays_id, 
+    const int data_dim, 
+    float* rgbfeat, 
+    NanoFloatGrid* grid,
+    float* weights, 
+    float* dendata, 
+    float* coldata,
+    RenderKwargs* args,
+    SceneInfo* scene)
 {
-    // default nVec = 4
     const int n = blockDim.x * blockIdx.x + threadIdx.x;
-    if (n < HW){
-        if (n_samples[n] == 0) {data[n*3] = bg; data[n*3+1] = bg; data[n*3+2] = bg; return;}
-        Vec3fT wldsize(reso[0]-1, reso[1]-1, reso[2]-1);
-        Vec3fT ray_o(rays_o[0], rays_o[1], rays_o[2]);
-        Vec3fT ray_d(rays_d[n*3], rays_d[n*3+1], rays_d[n*3+2]);
+    if (n < args->HW){
+        if (args->n_samples[n] == 0) {  // no sampled points on this ray
+            args->data[n*3  ] = args->bg; 
+            args->data[n*3+1] = args->bg; 
+            args->data[n*3+2] = args->bg; 
+            return;
+        }
+        Vec3fT wldsize(scene->reso[0]-1, scene->reso[1]-1, scene->reso[2]-1);
+        Vec3fT ray_o(args->rays_o[0], args->rays_o[1], args->rays_o[2]);
+        Vec3fT ray_d(args->rays_d[n*3], args->rays_d[n*3+1], args->rays_d[n*3+2]);
         // get ray
         // begin to ray trace
         float T_cum = 1.0f;
         float weight = 0.0f;
-        float t = tmins[n];
+        float t = args->tmins[n];
         int idx[8]; float scale[8];
-        int r = i_starts[n];
+        int r = args->i_starts[n];
         FloatAccT acc = grid->getAccessor();
-        while (t<tmaxs[n]){
-            t += steplens[n];
+        while (t<args->tmaxs[n]){
+            t += args->steplens[n];
             Vec3fT ray_pts = ray_o + t * ray_d;
             if ((0>ray_pts[0]) | (0>ray_pts[1]) | (0>ray_pts[2]) | 
                 (1<ray_pts[0]) | (1<ray_pts[1]) | (1<ray_pts[2])) {continue;}
@@ -563,63 +349,311 @@ __global__ void ray_marching_merged2(
             if (!acc.isActive(nanovdb::Round<CoordT>(xyz))){continue;}
             float v_den = trigetDensity2(xyz, dendata, acc, scale, idx);
             // raw2alpha and use threshold
-            float alpha = 1 - pow(1 + exp(v_den + act_shift), -interval);
+            float alpha = 1 - pow(1 + exp(v_den + args->act_shift), -args->interval);
             
-            if (alpha <= fast_color_thres) continue;
+            if (alpha <= args->fast_color_thres) continue;
             // alpha2weight and use threshold
             weight = T_cum * alpha;
             T_cum *= (1 - alpha);
-            if (weight <= fast_color_thres) continue;            
+            if (weight <= args->fast_color_thres) continue;            
             trigetColor(coldata, scale, idx, data_dim, rgbfeat+r*data_dim);
             weights[r++] = weight;
             // if (T_cum < 1e-3) break;
         }
         // if (r != i_ends[n]) printf("WRONG: RAY [%d] END WITH [%d] RATHER THAN [%d]\n", n, r, i_ends[n]);
-        float last_rgb = T_cum * bg;
-        data[n*3] = last_rgb; data[n*3+1] = last_rgb; data[n*3+2] = last_rgb;
+        float last_rgb = T_cum * args->bg;
+        args->data[n*3] = last_rgb; args->data[n*3+1] = last_rgb; args->data[n*3+2] = last_rgb;
     }
 }
 
+
 void render_an_image_cuda(
-    float* data, int H, int W, float* c2w, float* K,
-    bool inverse_y,
-    float* steplens, float* pefeat, float* tmins, float* tmaxs, int* n_samples,
-    float* rays_o, float* rays_d, int* i_starts, int* i_ends,
-    float near, float far, float* xyz_min, float* xyz_max, float stepdist, 
-    int* reso, float act_shift, float interval, float fast_color_thres, int data_dim, 
-    float* w0, float* b0, float* w1, float* b1, float* w2, float* b2, int rgbnet_width, float bg,
-    FloatGridT* deviceGrid, float* dendata, float* coldata, cublasHandle_t cuHandle)
+    RenderKwargs &args, 
+    MLP &mlp,
+    SceneInfo &scene,
+    float* c2w,
+    NanoFloatGrid* deviceGrid, 
+    float* dendata, 
+    float* coldata)
 {
-    int HW = H * W;
-    int* gpu_Nsum; cudaMalloc(&gpu_Nsum, sizeof(int)); cudaMemset(gpu_Nsum, 0, sizeof(int));
+    RenderKwargs* gpuargs; 
+    cudaMalloc(&gpuargs, sizeof(RenderKwargs)); 
+    cudaMemcpy(gpuargs, &args, sizeof(RenderKwargs), cudaMemcpyHostToDevice);
+    SceneInfo* gpuscene; 
+    cudaMalloc(&gpuscene, sizeof(SceneInfo)); 
+    cudaMemcpy(gpuscene, &scene, sizeof(SceneInfo), cudaMemcpyHostToDevice);
 
-    first_look_merged2<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(
-        H, W, rays_o, rays_d, n_samples, steplens, tmins, tmaxs, inverse_y,
-        reso, fast_color_thres, interval, act_shift, deviceGrid, gpu_Nsum,
-        K, c2w, xyz_max, xyz_min, pefeat, near, far, stepdist, dendata);
-
+    int HW = args.HW;
+    int* gpu_Nsum; 
+    cudaMalloc(&gpu_Nsum, sizeof(int)); 
+    cudaMemset(gpu_Nsum, 0, sizeof(int));
+    // first ray-marching
+    first_look_merged<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(
+        deviceGrid, gpu_Nsum, c2w, dendata, gpuargs, gpuscene
+    );
     int Nvalid = 0;
     cudaMemcpy(&Nvalid, gpu_Nsum, sizeof(int), cudaMemcpyDeviceToHost);
-    int* rays_id; cudaMalloc(&rays_id, Nvalid * sizeof(int));
+    cudaFree(gpu_Nsum);
 
-    // stage2
-    thrust::exclusive_scan(thrust::device, n_samples, n_samples + HW, i_starts);
-    thrust::inclusive_scan(thrust::device, n_samples, n_samples + HW, i_ends);
-    set_rays_id<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(i_starts, i_ends, rays_id, HW);    
-    // stage3
-    float* rgbfeat; cudaMalloc(&rgbfeat, Nvalid * data_dim * sizeof(float));
-    float* weights; cudaMalloc(&weights, Nvalid * sizeof(float));
-    ray_marching_merged2<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(
-        data, HW, n_samples, steplens, rays_o, rays_d, rays_id,
-        reso, act_shift, interval, fast_color_thres, data_dim,
-        rgbfeat, deviceGrid, tmins, tmaxs, weights, i_starts, i_ends, bg, dendata, coldata);
+    // refer to DVGO
+    int* rays_id; 
+    cudaMalloc(&rays_id, Nvalid * sizeof(int));
+    thrust::exclusive_scan(thrust::device, args.n_samples, args.n_samples + HW, args.i_starts);
+    thrust::inclusive_scan(thrust::device, args.n_samples, args.n_samples + HW, args.i_ends);
+    set_rays_id<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(args.i_starts, args.i_ends, rays_id, HW);
     
-    float* raw_rgbs; cudaMalloc(&raw_rgbs, Nvalid * 3 * sizeof(float));
-    cuda_rgbnet(raw_rgbs, rgbfeat, pefeat, w0, b0, w1, b1, w2, b2, Nvalid, HW, data_dim, 27, rgbnet_width, 3, cuHandle, rays_id);
-    final_render<<<GET_BLOCK_NUM(Nvalid, BLOCKDIM), BLOCKDIM>>>(Nvalid, rays_id, weights, raw_rgbs, data);
+    // second ray-marching
+    float* rgbfeat; 
+    cudaMalloc(&rgbfeat, Nvalid * mlp.Dcol * sizeof(float));
+    float* weights; 
+    cudaMalloc(&weights, Nvalid * sizeof(float));
+    ray_marching_merged<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(
+        rays_id, mlp.Dcol, rgbfeat, deviceGrid, weights, dendata, coldata, gpuargs, gpuscene);
+    
+    // color mapping
+    float* raw_rgbs; 
+    cudaMalloc(&raw_rgbs, Nvalid * 3 * sizeof(float));
+    cuda_rgbnet(raw_rgbs, rgbfeat, args.pefeat, mlp, Nvalid, HW, rays_id);
+    final_render<<<GET_BLOCK_NUM(Nvalid, BLOCKDIM), BLOCKDIM>>>(Nvalid, rays_id, weights, raw_rgbs, args.data);
     cudaDeviceSynchronize();
     gpuCheckKernelExecutionError( __FILE__, __LINE__);
     cudaFree(rgbfeat); cudaFree(rays_id); 
     cudaFree(raw_rgbs); cudaFree(weights);
-    cudaFree(gpu_Nsum);    
+    
+    cudaFree(gpuargs); cudaFree(gpuscene);
 }
+
+
+
+// deprecated
+// __global__ void prepare_accs_kernel(
+//     FloatGridT* densityGrid,
+//     Vec3fGridT** colorGrids,
+//     FloatGridT* maskGrid,
+//     FloatAccT* densityAccs,
+//     Vec3fAccT* colorAccs,
+//     FloatAccT* maskAccs,
+//     int HW,
+//     int nVec)
+// {
+//     const int n = blockDim.x * blockIdx.x + threadIdx.x;
+//     if (n < HW){
+//         densityAccs[n] = densityGrid->getAccessor();
+//         maskAccs[n] = maskGrid->getAccessor();
+//         for (int d=0; d<nVec; d++)
+//             colorAccs[n*nVec+d] = colorGrids[d]->getAccessor();
+//     }
+// }
+
+// void prepare_accs(
+//     FloatGridT* densityGrid,
+//     Vec3fGridT** colorGrids,
+//     FloatGridT* maskGrid,
+//     FloatAccT* densityAccs,
+//     Vec3fAccT* colorAccs,
+//     FloatAccT* maskAccs,
+//     int HW,
+//     int nVec)
+// {
+//     prepare_accs_kernel<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(
+//         densityGrid, colorGrids, maskGrid, densityAccs, colorAccs, maskAccs, HW, nVec);
+//     cudaDeviceSynchronize();
+// }
+
+
+// __global__ void prepare_accs_kernel(
+//     FloatGridT* densityGrid,
+//     Vec3fGridT** colorGrids,
+//     FloatAccT* densityAccs,
+//     Vec3fAccT* colorAccs,
+//     int HW,
+//     int nVec)
+// {
+//     const int n = blockDim.x * blockIdx.x + threadIdx.x;
+//     if (n < HW){
+//         densityAccs[n] = densityGrid->getAccessor();
+//         for (int d=0; d<nVec; d++)
+//             colorAccs[n*nVec+d] = colorGrids[d]->getAccessor();
+//     }
+// }
+
+// void prepare_accs(
+//     FloatGridT* densityGrid,
+//     Vec3fGridT** colorGrids,
+//     FloatAccT* densityAccs,
+//     Vec3fAccT* colorAccs,
+//     int HW,
+//     int nVec)
+// {
+//     prepare_accs_kernel<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(densityGrid, colorGrids, densityAccs, colorAccs, HW, nVec);
+//     cudaDeviceSynchronize();
+// }
+
+
+// __global__ void ray_marching(
+//     float* data, const int HW, int* n_samples, float* steplens, float* rays_o, float* rays_d, int* rays_id,
+//     const int* reso, const float act_shift, const float interval, const float fast_color_thres,
+//     const int nVec, float* rgbfeat, FloatAccT* densityAccs, Vec3fAccT* colorAccs, FloatAccT* maskAccs,
+//     float* tmins, float* tmaxs, float* weights, int* i_starts, int* i_ends, const float bg)
+// {
+//     // default nVec = 4
+//     const int n = blockDim.x * blockIdx.x + threadIdx.x;
+//     if (n < HW){
+//         if (n_samples[n] == 0) {data[n*3] = bg; data[n*3+1] = bg; data[n*3+2] = bg; return;}
+//         // int data_dim = nVec*3+1;
+//         Vec3fT wldsize(reso[0]-1, reso[1]-1, reso[2]-1);
+//         Vec3fT ray_o(rays_o[0], rays_o[1], rays_o[2]);
+//         Vec3fT ray_d(rays_d[n*3], rays_d[n*3+1], rays_d[n*3+2]);
+//         // get ray
+//         // begin to ray trace
+//         float scales[8];
+//         float T_cum = 1.0f;
+//         float weight = 0.0f;
+//         float t = tmins[n];
+//         int r = i_starts[n];
+//         while (t<tmaxs[n]){
+//             t += steplens[n];
+//             Vec3fT ray_pts = ray_o + t * ray_d;
+//             // stotal[n]++;
+//             // atomicAdd(stotal, 1);
+//             // out of bbox
+//             if ((0>ray_pts[0]) | (0>ray_pts[1]) | (0>ray_pts[2]) | 
+//                 (1<ray_pts[0]) | (1<ray_pts[1]) | (1<ray_pts[2])) {continue;}
+//             // get value of density
+//             Vec3fT xyz = ray_pts * wldsize;
+//             if (maskAccs!=nullptr && !maskAccs[n].isActive(nanovdb::Round<CoordT>(xyz))){continue;}
+//             float v_den = trigetDenValue(densityAccs[n], xyz, scales);
+//             // raw2alpha and use threshold
+//             float alpha = 1 - pow(1 + exp(v_den + act_shift), -interval);
+//             if (alpha <= fast_color_thres) continue;
+//             // alpha2weight and use threshold
+//             weight = T_cum * alpha;
+//             T_cum *= (1 - alpha);
+            
+//             if (weight <= fast_color_thres) continue;
+//             for (int i_=0; i_<4; i_++){
+//                 //@ k0: [H*W, nVec*3]
+//                 Vec3fT v_col = trigetColValue(colorAccs[n*nVec+i_], xyz, scales);
+//                 rgbfeat[r*3*nVec+i_*3] = v_col[0]; rgbfeat[r*3*nVec+i_*3+1] = v_col[1]; rgbfeat[r*3*nVec+i_*3+2] = v_col[2];
+//             }
+//             // if (n == 200412){
+//             //     printf("r=%d, xyz=%f,%f,%f, v_den=%f, weight=%f\n", r, xyz[0],xyz[1],xyz[2], v_den, weight);
+//             // }
+//             weights[r++] = weight;
+//             // if (T_cum < 1e-3) break;
+//         }
+//         if (r != i_ends[n]) printf("WRONG: RAY [%d] END WITH [%d] RATHER THAN [%d]\n", n, r, i_ends[n]);
+//         float last_rgb = T_cum * bg;
+//         data[n*3] = last_rgb; data[n*3+1] = last_rgb; data[n*3+2] = last_rgb;
+//     }
+// }
+
+// find n_samples
+// __global__ void first_look(const int H, const int W, float* rays_o, float* rays_d,
+//     int* n_samples, float* steplens, const int nVec, float* tmins, float* tmaxs,
+//     int* reso, const float fast_color_thres, const float interval, const float act_shift, 
+//     FloatAccT* maskAccs, FloatAccT* densityAccs, int* Nsum, float* K, float* c2w, 
+//     float* xyz_max, float* xyz_min, float* pefeat, const float near, const float far, const float stepdist)
+// {
+//     int n = blockDim.x * blockIdx.x + threadIdx.x;
+//     if (n < H * W){
+//         int nx3 = n * 3;
+//         // int data_dim = nVec * 3 + 1;
+//         get_rays(n, H, W, K, c2w, rays_o, rays_d, steplens, stepdist, xyz_max, xyz_min, pefeat, tmins, tmaxs, near, far);
+
+//         // first try ray marching
+//         n_samples[n] = 0;
+//         Vec3fT wldsize = Vec3fT(reso[0]-1, reso[1]-1, reso[2]-1);
+//         Vec3fT ray_o(rays_o[0], rays_o[1], rays_o[2]);
+//         Vec3fT ray_d(rays_d[nx3], rays_d[nx3+1], rays_d[nx3+2]);
+//         // if (n == 197721) printf("rayso=(%f,%f,%f), raysd=(%f,%f,%f)\n", ray_o[0], ray_o[1], ray_o[2], ray_d[0], ray_d[1], ray_d[2]);
+//         // begin to ray trace
+//         float T_cum = 1.0f;
+//         float weight = 0.0f;
+//         float t = tmins[n];
+//         bool update_tmin = false;
+//         float scales[8];
+//         // atomicAdd(ototal, int(max(1.0, ceil((tmaxs[n]-tmins[n])/steplens[n]))));
+//         //ototal[n] += int(max(1.0, ceil((tmaxs[n]-tmins[n])/steplens[n])));
+//         while (t<tmaxs[n]){
+//             t += steplens[n];
+//             Vec3fT ray_pts = ray_o + t * ray_d;
+//             // total[n]++;
+//             // out of bbox
+//             if ((0>ray_pts[0]) | (0>ray_pts[1]) | (0>ray_pts[2]) | 
+//                 (1<ray_pts[0]) | (1<ray_pts[1]) | (1<ray_pts[2])) continue;
+//             // get value of density
+//             Vec3fT xyz = ray_pts * wldsize;
+//             if (maskAccs!=nullptr && !maskAccs[n].isActive(nanovdb::Round<CoordT>(xyz))) continue;
+//             float v_den = trigetDenValue(densityAccs[n], xyz, scales);
+//             // raw2alpha and use threshold
+//             float alpha = 1 - pow(1 + exp(v_den + act_shift), -interval);
+//             if (alpha <= fast_color_thres) continue;
+//             // alpha2weight and use threshold
+//             weight = T_cum * alpha;
+//             T_cum *= (1 - alpha);
+//             if (weight <= fast_color_thres) continue;
+//             // atomicAdd(wout, 1);
+//             n_samples[n]++;
+//             // if (n == 197721)
+//             //     printf("n=%d, den=%f, pts=(%f,%f,%f), weight=%f\n", n_samples[n], v_den, ray_pts[0], ray_pts[1], ray_pts[2], weight);
+//             if (!update_tmin){tmins[n] = t - steplens[n]; update_tmin = true;}
+//             if (T_cum < 1e-3) {tmaxs[n] = t; break;}
+//         }
+//         atomicAdd(Nsum, n_samples[n]);
+//     }
+// }
+
+
+
+// void render_an_image_cuda(
+//     float* data, const int H, const int W, 
+//     float* c2w, float* K,
+//     float* steplens, float* pefeat, float* tmins, float* tmaxs, int* n_samples,
+//     float* rays_o, float* rays_d, int* i_starts, int* i_ends,
+//     const float near, const float far, float* xyz_min, float* xyz_max, const float stepdist, 
+//     int* reso, const float act_shift, const float interval, const float fast_color_thres,
+//     const int nVec, float* w0, float* b0, float* w1, float* b1, float* w2, float* b2, int rgbnet_width, float bg,
+//     FloatAccT* densityAccs, Vec3fAccT* colorAccs, cublasHandle_t cuHandle, FloatAccT* maskAccs)
+// {
+//     // malloc space, default: self.rgbnet_full_implicit=False, self.rgbnet!=None, self.rgbnet_direct=True, viewbase_pe=4
+//     int HW = H * W;
+//     int* gpu_Nsum; cudaMalloc(&gpu_Nsum, sizeof(int)); cudaMemset(gpu_Nsum, 0, sizeof(int));
+
+//     // stage1
+//     // clock_t t1 = clock();
+//     first_look<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(
+//         H, W, rays_o, rays_d, n_samples, steplens, nVec, tmins, tmaxs,
+//         reso, fast_color_thres, interval, act_shift, maskAccs, densityAccs, gpu_Nsum,
+//         K, c2w, xyz_max, xyz_min, pefeat, near, far, stepdist);
+
+//     int Nvalid = 0;
+//     cudaMemcpy(&Nvalid, gpu_Nsum, sizeof(int), cudaMemcpyDeviceToHost);
+//     int* rays_id; cudaMalloc(&rays_id, Nvalid * sizeof(int));
+
+//     // stage2
+//     thrust::exclusive_scan(thrust::device, n_samples, n_samples + HW, i_starts);
+//     thrust::inclusive_scan(thrust::device, n_samples, n_samples + HW, i_ends);
+//     set_rays_id<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(i_starts, i_ends, rays_id, HW);
+    
+//     // stage3
+//     float* rgbfeat; cudaMalloc(&rgbfeat, Nvalid * 3*nVec * sizeof(float));
+//     float* weights; cudaMalloc(&weights, Nvalid * sizeof(float));
+
+//     // stage4 !!!
+//     // clock_t t3 = clock();
+//     ray_marching<<<GET_BLOCK_NUM(HW, BLOCKDIM), BLOCKDIM>>>(
+//         data, HW, n_samples, steplens, rays_o, rays_d, rays_id,
+//         reso, act_shift, interval, fast_color_thres, nVec,
+//         rgbfeat, densityAccs, colorAccs, maskAccs, tmins, tmaxs, weights, i_starts, i_ends, bg);
+//     // stage5 !!!
+//     float* raw_rgbs; cudaMalloc(&raw_rgbs, Nvalid * 3 * sizeof(float));
+//     cuda_rgbnet(raw_rgbs, rgbfeat, pefeat, w0, b0, w1, b1, w2, b2, Nvalid, HW, 3*nVec, 27, rgbnet_width, 3, cuHandle, rays_id);
+//     // stage6
+//     final_render<<<GET_BLOCK_NUM(Nvalid, BLOCKDIM), BLOCKDIM>>>(Nvalid, rays_id, weights, raw_rgbs, data);
+//     cudaDeviceSynchronize();
+//     gpuCheckKernelExecutionError( __FILE__, __LINE__);
+//     cudaFree(rgbfeat); cudaFree(rays_id); 
+//     cudaFree(raw_rgbs); cudaFree(weights);
+//     cudaFree(gpu_Nsum);    
+// }

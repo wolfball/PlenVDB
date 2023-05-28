@@ -1,10 +1,10 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_chair'
+expname = 'vdb_chair'
 basedir = './logs/nerf_synthetic'
 
 data = dict(
-    datadir='./data/nerf_synthetic/chair',
+    datadir='/data2/hyan/data/nerf_synthetic/chair',
     dataset_type='blender',
     white_bkgd=True,
 )

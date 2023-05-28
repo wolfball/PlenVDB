@@ -81,8 +81,8 @@ fine_train.update(dict(
 coarse_model_and_render = dict(
     num_voxels=1024000,           # expected number of voxel
     num_voxels_base=1024000,      # to rescale delta distance
-    density_type='VDBGrid',     # DenseGrid, TensoRFGrid
-    k0_type='VDBGrid',          # DenseGrid, TensoRFGrid
+    density_type='VDBGrid',     # DenseGrid, VDBGrid
+    k0_type='VDBGrid',          # DenseGrid, VDBGrid
     density_config=dict(),
     k0_config=dict(),
     mpi_depth=128,                # the number of planes in Multiplane Image (work when ndc=True)

@@ -1,8 +1,8 @@
 _base_ = './llff_default.py'
 
-expname = 'horns'
+expname = 'vdb_horns'
 
 data = dict(
-    datadir='./data/nerf_llff_data/horns',
+    datadir='/data2/hyan/data/horns',
 )
 

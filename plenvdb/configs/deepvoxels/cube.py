@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_cube'
+expname = 'vdb_cube'
 basedir = './logs/deepvoxels'
 
 data = dict(

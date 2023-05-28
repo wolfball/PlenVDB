@@ -91,7 +91,7 @@ class VDBGrid(nn.Module):
     def scale_volume_grid(self, new_world_size):
         data = self.get_dense_grid()
         new_data = F.interpolate(data, size=tuple(new_world_size), mode='trilinear', align_corners=True).permute(0,2,3,4,1).squeeze().contiguous()
-        print(f"========> data transfer uses: {self.grid.getTimer()} secs")
+        # print(f"========> data transfer uses: {self.grid.getTimer()} secs")
         if self.channels == 1:
             self.grid = DensityVDB(new_world_size.tolist(), 1)
         else:
@@ -103,7 +103,7 @@ class VDBGrid(nn.Module):
 
     def total_variation_add_grad(self, wx, wy, wz, dense_mode):
         '''Add gradients by total variation loss in-place'''
-        raise NotImplementedError
+        return
         self.grid.total_variation_add_grad(wx, wy, wz, dense_mode)
 
     def setValuesOn_bymask(self, mask, val):
@@ -130,7 +130,8 @@ class VDBGrid(nn.Module):
         self.grid.resetTimer()
     
     def getTimer(self):
-        print(f"========> data transfer uses: {self.grid.getTimer()} secs")
+        pass
+        # print(f"========> data transfer uses: {self.grid.getTimer()} secs")
 
     def extra_repr(self):
         return f'channels={self.channels}, world_size={self.world_size.tolist()}'

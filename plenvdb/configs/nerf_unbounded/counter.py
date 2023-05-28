@@ -1,6 +1,6 @@
 _base_ = './nerf_unbounded_default.py'
 
-expname = 'dvgo_counter_unbounded'
+expname = 'vdb_counter_unbounded'
 
 data = dict(
     datadir='./data/360_v2/counter',

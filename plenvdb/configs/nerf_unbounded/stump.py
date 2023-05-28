@@ -1,9 +1,9 @@
 _base_ = './nerf_unbounded_default.py'
 
-expname = 'dvgo_stump_unbounded'
+expname = 'vdb_stump_unbounded'
 
 data = dict(
-    datadir='./data/360_v2/stump',
+    datadir='/data2/hyan/data/stump',
     factor=4,
     movie_render_kwargs=dict(
         shift_x=0.0,  # positive right
