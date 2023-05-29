@@ -44,7 +44,7 @@ Download [pretrained DensityVDB](https://drive.google.com/drive/folders/12KvARcT
 
 ## News <a name="news"></a>
 
-- [2023/05/28] Code initial release `v1.0`
+- [2023/05/29] Code initial release `v1.0`
 - [2023/02/28] PlenVDB is accepted by CVPR 2023.
 
 ## File Tree <a name="filetree"></a>
